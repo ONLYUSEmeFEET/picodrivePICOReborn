@@ -2,7 +2,7 @@
 // (c) Copyright 2007, Grazvydas "notaz" Ignotas
 
 
-#include "../pico_int.h"
+#include "../PicoInt.h"
 
 // ym2612
 #include "../sound/ym2612.h"
@@ -100,10 +100,9 @@ PICO_INTERNAL int PicoCdSaveState(void *file)
 {
 	unsigned char buff[0x60];
 	void *ym2612_regs = YM2612GetRegs();
-	int ver = 0x0133; // not really used..
 
 	areaWrite("PicoSEXT", 1, 8, file);
-	areaWrite(&ver, 1, 4, file);
+	areaWrite(&PicoVer, 1, 4, file);
 
 	memset(buff, 0, sizeof(buff));
 	PicoAreaPackCpu(buff, 0);
@@ -115,13 +114,15 @@ PICO_INTERNAL int PicoCdSaveState(void *file)
 	CHECKED_WRITE_BUFF(CHUNK_VSRAM, Pico.vsram);
 	CHECKED_WRITE_BUFF(CHUNK_MISC,  Pico.m);
 	CHECKED_WRITE_BUFF(CHUNK_VIDEO, Pico.video);
-
-	memset(buff, 0, sizeof(buff));
-	z80_pack(buff);
-	CHECKED_WRITE_BUFF(CHUNK_Z80, buff);
-	CHECKED_WRITE(CHUNK_PSG, 28*4, sn76496_regs);
-	ym2612_pack_state();
-	CHECKED_WRITE(CHUNK_FM, 0x200+4, ym2612_regs);
+	if (PicoOpt&7) {
+		memset(buff, 0, sizeof(buff));
+		z80_pack(buff);
+		CHECKED_WRITE_BUFF(CHUNK_Z80, buff);
+	}
+	if (PicoOpt&3)
+		CHECKED_WRITE(CHUNK_PSG, 28*4, sn76496_regs);
+	if (PicoOpt&1)
+		CHECKED_WRITE(CHUNK_FM, 0x200+4, ym2612_regs);
 
 	if (PicoAHW & PAHW_MCD)
 	{
@@ -171,7 +172,7 @@ static int g_read_offs = 0;
 // when is eof really set?
 #define CHECKED_READ(len,data) \
 	if (areaRead(data, 1, len, file) != len) { \
-		if (len == 1 && areaEof(file)) goto readend; \
+		if (len == 1 && areaEof(file)) return 0; \
 		R_ERROR_RETURN("areaRead: premature EOF\n"); \
 		return 1; \
 	} \
@@ -189,7 +190,7 @@ static int g_read_offs = 0;
 
 PICO_INTERNAL int PicoCdLoadState(void *file)
 {
-	unsigned char buff[0x60], buff_m68k[0x60], buff_s68k[0x60];
+	unsigned char buff[0x60];
 	int ver, len;
 	void *ym2612_regs = YM2612GetRegs();
 
@@ -210,7 +211,8 @@ PICO_INTERNAL int PicoCdLoadState(void *file)
 		switch (buff[0])
 		{
 			case CHUNK_M68K:
-				CHECKED_READ_BUFF(buff_m68k);
+				CHECKED_READ_BUFF(buff);
+				PicoAreaUnpackCpu(buff, 0);
 				break;
 
 			case CHUNK_Z80:
@@ -228,12 +230,13 @@ PICO_INTERNAL int PicoCdLoadState(void *file)
 			case CHUNK_PSG:   CHECKED_READ2(28*4, sn76496_regs); break;
 			case CHUNK_FM:
 				CHECKED_READ2(0x200+4, ym2612_regs);
-				ym2612_unpack_state();
+				YM2612PicoStateLoad();
 				break;
 
 			// cd stuff
 			case CHUNK_S68K:
-				CHECKED_READ_BUFF(buff_s68k);
+				CHECKED_READ_BUFF(buff);
+				PicoAreaUnpackCpu(buff, 1);
 				break;
 
 			case CHUNK_PRG_RAM:	CHECKED_READ_BUFF(Pico_mcd->prg_ram); break;
@@ -266,18 +269,21 @@ PICO_INTERNAL int PicoCdLoadState(void *file)
 		breakswitch:;
 	}
 
-readend:
 	if (PicoAHW & PAHW_MCD)
 	{
-		PicoMemStateLoaded();
-
+		/* after load events */
+		if (Pico_mcd->s68k_regs[3]&4) // 1M mode?
+			wram_2M_to_1M(Pico_mcd->word_ram2M);
+		PicoMemResetCD(Pico_mcd->s68k_regs[3]);
+#ifdef _ASM_CD_MEMORY_C
+		if (Pico_mcd->s68k_regs[3]&4)
+			PicoMemResetCDdecode(Pico_mcd->s68k_regs[3]);
+#endif
 		if (!(Pico_mcd->s68k_regs[0x36] & 1) && (Pico_mcd->scd.Status_CDC & 1))
 			cdda_start_play();
-
-		// must unpack after other CD stuff is loaded
-		PicoAreaUnpackCpu(buff_s68k, 1);
+		// restore hint vector
+        	*(unsigned short *)(Pico_mcd->bios + 0x72) = Pico_mcd->m.hint_vector;
 	}
-	PicoAreaUnpackCpu(buff_m68k, 0);
 
 	return 0;
 }
@@ -314,7 +320,6 @@ int PicoCdLoadStateGfx(void *file)
 		}
 	}
 
-readend:
 	return 0;
 }
 

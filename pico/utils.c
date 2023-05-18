@@ -7,7 +7,7 @@
 // For commercial use, separate licencing terms must be obtained.
 
 
-#include "pico_int.h"
+#include "PicoInt.h"
 
 int PicuAnd=0xf7de;
 

@@ -25,11 +25,10 @@
 #include "../common/emu.h"
 #include "../common/readpng.h"
 #include "../common/lprintf.h"
-#include "../common/input.h"
 #include "version.h"
 
-#include <pico/pico_int.h>
-#include <pico/patch.h>
+#include <Pico/PicoInt.h>
+#include <Pico/Patch.h>
 #include <zlib/zlib.h>
 
 
@@ -44,13 +43,53 @@ const char * const keyNames[] = {
 static unsigned short bg_buffer[480*272] __attribute__((aligned(16)));
 #define menu_screen psp_screen
 
-void menu_darken_bg(void *dst, const void *src, int pixels, int darker);
+static void menu_darken_bg(void *dst, const void *src, int pixels, int darker);
 static void menu_prepare_bg(int use_game_bg, int use_fg);
 
 
 static unsigned int inp_prev = 0;
 
-void menu_draw_begin(void)
+static unsigned long wait_for_input(unsigned int interesting, int is_key_config)
+{
+	unsigned int ret;
+	static int repeats = 0, wait = 50;
+	int release = 0, count, i;
+
+	if (!is_key_config)
+		interesting |= (interesting & 0xf0) << 24; // also use analog
+
+	if (repeats == 2 || repeats == 4) wait /= 2;
+	if (repeats == 6) wait = 15;
+
+	for (i = 0; i < 6 && inp_prev == psp_pad_read(1); i++) {
+		if (i == 0) repeats++;
+		psp_msleep(wait);
+	}
+
+	for (count = 0; !((ret = psp_pad_read(1)) & interesting) && count < 100; count++) {
+		psp_msleep(50);
+		release = 1;
+	}
+
+	if (release || ret != inp_prev) {
+		repeats = 0;
+		wait = 50;
+	}
+	inp_prev = ret;
+
+	if (!is_key_config)
+		ret |= (ret & 0xf0000000) >> 24; // use analog as d-pad
+
+	// we don't need diagonals in menus
+	if ((ret&BTN_UP)   && (ret&BTN_LEFT))  ret &= ~BTN_LEFT;
+	if ((ret&BTN_UP)   && (ret&BTN_RIGHT)) ret &= ~BTN_RIGHT;
+	if ((ret&BTN_DOWN) && (ret&BTN_LEFT))  ret &= ~BTN_LEFT;
+	if ((ret&BTN_DOWN) && (ret&BTN_RIGHT)) ret &= ~BTN_RIGHT;
+
+	return ret;
+}
+
+static void menu_draw_begin(void)
 {
 	// short *src = (short *)bg_buffer, *dst = (short *)menu_screen;
 	// int i;
@@ -66,7 +105,7 @@ void menu_draw_begin(void)
 }
 
 
-void menu_draw_end(void)
+static void menu_draw_end(void)
 {
 	psp_video_flip(1);
 }
@@ -132,9 +171,13 @@ void menu_romload_end(void)
 
 // -------------- ROM selector --------------
 
+// SceIoDirent
+#define DT_DIR FIO_SO_IFDIR
+#define DT_REG FIO_SO_IFREG
+
 struct my_dirent
 {
-	unsigned int d_type;
+	unsigned char d_type;
 	char d_name[255];
 };
 
@@ -175,7 +218,7 @@ static void draw_dirlist(char *curdir, struct my_dirent **namelist, int n, int s
 		pos = start + i;
 		if (pos < 0)  continue;
 		if (pos > 26) break;
-		if (namelist[i+1]->d_type & FIO_S_IFDIR) {
+		if (namelist[i+1]->d_type & DT_DIR) {
 			smalltext_out16_lim(14,   pos*10, "/", 0xd7ff, 1);
 			smalltext_out16_lim(14+6, pos*10, namelist[i+1]->d_name, 0xd7ff, 80-3);
 		} else {
@@ -190,10 +233,9 @@ static void draw_dirlist(char *curdir, struct my_dirent **namelist, int n, int s
 static int scandir_cmp(const void *p1, const void *p2)
 {
 	struct my_dirent **d1 = (struct my_dirent **)p1, **d2 = (struct my_dirent **)p2;
-	if ((*d1)->d_type & (*d2)->d_type & FIO_S_IFDIR)
-		return strcasecmp((*d1)->d_name, (*d2)->d_name);
-	if ((*d1)->d_type & FIO_S_IFDIR) return -1; // put before
-	if ((*d2)->d_type & FIO_S_IFDIR) return  1;
+	if ((*d1)->d_type == (*d2)->d_type) return strcasecmp((*d1)->d_name, (*d2)->d_name);
+	if ((*d1)->d_type & DT_DIR) return -1; // put before
+	if ((*d2)->d_type & DT_DIR) return  1;
 	return strcasecmp((*d1)->d_name, (*d2)->d_name);
 }
 
@@ -252,7 +294,7 @@ static int my_scandir(const char *dir, struct my_dirent ***namelist_out,
 	{
 		ent = malloc(sizeof(*ent));
 		if (ent == NULL) { lprintf("%s:%i: OOM\n", __FILE__, __LINE__); goto fail; }
-		ent->d_type = sce_ent.d_stat.st_mode;
+		ent->d_type = sce_ent.d_stat.st_attr;
 		strncpy(ent->d_name, sce_ent.d_name, sizeof(ent->d_name));
 		ent->d_name[sizeof(ent->d_name)-1] = 0;
 		if (filter == NULL || filter(ent))
@@ -305,8 +347,7 @@ static char *romsel_loop(char *curr_path)
 	// is this a dir or a full path?
 	memset(&cpstat, 0, sizeof(cpstat));
 	iret = sceIoGetstat(curr_path, &cpstat);
-	if (iret >= 0 && (cpstat.st_mode & FIO_S_IFDIR)); // dir
-	else if (iret >= 0 && (cpstat.st_mode & FIO_S_IFREG)) { // file
+	if (iret >= 0 && (cpstat.st_attr & FIO_SO_IFREG)) { // file
 		char *p;
 		for (p = curr_path + strlen(curr_path) - 1; p > curr_path && *p != '/'; p--);
 		if (p > curr_path) {
@@ -315,6 +356,7 @@ static char *romsel_loop(char *curr_path)
 		}
 		else strcpy(curr_path, "ms0:/");
 	}
+	else if (iret >= 0 && (cpstat.st_attr & FIO_SO_IFDIR)); // dir
 	else strcpy(curr_path, "ms0:/"); // something else
 
 	n = my_scandir(curr_path, &namelist, scandir_filter, scandir_cmp);
@@ -342,17 +384,21 @@ static char *romsel_loop(char *curr_path)
 	for (;;)
 	{
 		draw_dirlist(curr_path, namelist, n, sel);
-		inp = in_menu_wait(PBTN_UP|PBTN_DOWN|PBTN_LEFT|PBTN_RIGHT|PBTN_L|PBTN_R|PBTN_X|PBTN_CIRCLE, 0);
-		if(inp & PBTN_UP  )  { sel--;   if (sel < 0)   sel = n-2; }
-		if(inp & PBTN_DOWN)  { sel++;   if (sel > n-2) sel = 0; }
-		if(inp & PBTN_LEFT)  { sel-=10; if (sel < 0)   sel = 0; }
-		if(inp & PBTN_L)     { sel-=24; if (sel < 0)   sel = 0; }
-		if(inp & PBTN_RIGHT) { sel+=10; if (sel > n-2) sel = n-2; }
-		if(inp & PBTN_R)     { sel+=24; if (sel > n-2) sel = n-2; }
-		if(inp & PBTN_CIRCLE) // enter dir/select
-		{
-			if (namelist[sel+1]->d_type & FIO_S_IFDIR)
-			{
+		inp = wait_for_input(BTN_UP|BTN_DOWN|BTN_LEFT|BTN_RIGHT|BTN_L|BTN_R|BTN_X|BTN_CIRCLE, 0);
+		if(inp & BTN_UP  )  { sel--;   if (sel < 0)   sel = n-2; }
+		if(inp & BTN_DOWN)  { sel++;   if (sel > n-2) sel = 0; }
+		if(inp & BTN_LEFT)  { sel-=10; if (sel < 0)   sel = 0; }
+		if(inp & BTN_L)     { sel-=24; if (sel < 0)   sel = 0; }
+		if(inp & BTN_RIGHT) { sel+=10; if (sel > n-2) sel = n-2; }
+		if(inp & BTN_R)     { sel+=24; if (sel > n-2) sel = n-2; }
+		if(inp & BTN_CIRCLE) { // enter dir/select
+			if (namelist[sel+1]->d_type & DT_REG) {
+				strcpy(romFileName, curr_path);
+				strcat(romFileName, "/");
+				strcat(romFileName, namelist[sel+1]->d_name);
+				ret = romFileName;
+				break;
+			} else if (namelist[sel+1]->d_type & DT_DIR) {
 				int newlen = strlen(curr_path) + strlen(namelist[sel+1]->d_name) + 2;
 				char *p, *newdir = malloc(newlen);
 				if (strcmp(namelist[sel+1]->d_name, "..") == 0) {
@@ -373,16 +419,8 @@ static char *romsel_loop(char *curr_path)
 				free(newdir);
 				break;
 			}
-			else if (namelist[sel+1]->d_type & FIO_S_IFREG)
-			{
-				strcpy(romFileName, curr_path);
-				strcat(romFileName, "/");
-				strcat(romFileName, namelist[sel+1]->d_name);
-				ret = romFileName;
-				break;
-			}
 		}
-		if(inp & PBTN_X) break; // cancel
+		if(inp & BTN_X) break; // cancel
 	}
 
 	if (n > 0) {
@@ -391,6 +429,38 @@ static char *romsel_loop(char *curr_path)
 	}
 
 	return ret;
+}
+
+// ------------ debug menu ------------
+
+char *debugString(void);
+
+static void draw_debug(void)
+{
+	char *p, *str = debugString();
+	int len, line;
+
+	menu_draw_begin();
+
+	p = str;
+	for (line = 0; line < 24; line++)
+	{
+		while (*p && *p != '\n') p++;
+		len = p - str;
+		if (len > 55) len = 55;
+		smalltext_out16_lim(1, line*10, str, 0xffff, len);
+		if (*p == 0) break;
+		p++; str = p;
+	}
+	menu_draw_end();
+}
+
+static void debug_menu_loop(void)
+{
+	int ret = 0;
+	draw_debug();
+	while (!(ret & (BTN_X|BTN_CIRCLE)))
+		ret = wait_for_input(BTN_X|BTN_CIRCLE, 0);
 }
 
 // ------------ patch/gg menu ------------
@@ -427,17 +497,17 @@ static void patches_menu_loop(void)
 	for(;;)
 	{
 		draw_patchlist(menu_sel);
-		inp = in_menu_wait(PBTN_UP|PBTN_DOWN|PBTN_LEFT|PBTN_RIGHT|PBTN_L|PBTN_R|PBTN_X|PBTN_CIRCLE, 0);
-		if(inp & PBTN_UP  ) { menu_sel--; if (menu_sel < 0) menu_sel = PicoPatchCount; }
-		if(inp & PBTN_DOWN) { menu_sel++; if (menu_sel > PicoPatchCount) menu_sel = 0; }
-		if(inp &(PBTN_LEFT|PBTN_L))  { menu_sel-=10; if (menu_sel < 0) menu_sel = 0; }
-		if(inp &(PBTN_RIGHT|PBTN_R)) { menu_sel+=10; if (menu_sel > PicoPatchCount) menu_sel = PicoPatchCount; }
-		if(inp & PBTN_CIRCLE) { // action
+		inp = wait_for_input(BTN_UP|BTN_DOWN|BTN_LEFT|BTN_RIGHT|BTN_L|BTN_R|BTN_X|BTN_CIRCLE, 0);
+		if(inp & BTN_UP  ) { menu_sel--; if (menu_sel < 0) menu_sel = PicoPatchCount; }
+		if(inp & BTN_DOWN) { menu_sel++; if (menu_sel > PicoPatchCount) menu_sel = 0; }
+		if(inp &(BTN_LEFT|BTN_L))  { menu_sel-=10; if (menu_sel < 0) menu_sel = 0; }
+		if(inp &(BTN_RIGHT|BTN_R)) { menu_sel+=10; if (menu_sel > PicoPatchCount) menu_sel = PicoPatchCount; }
+		if(inp & BTN_CIRCLE) { // action
 			if (menu_sel < PicoPatchCount)
 				PicoPatches[menu_sel].active = !PicoPatches[menu_sel].active;
 			else 	return;
 		}
-		if(inp & PBTN_X) return;
+		if(inp & BTN_X) return;
 	}
 
 }
@@ -517,7 +587,7 @@ static void draw_savestate_bg(int slot)
 		areaClose(file);
 	}
 
-	emu_forcedFrame(0);
+	emu_forcedFrame();
 	menu_prepare_bg(1, 0);
 
 	restore_oldstate(oldstate);
@@ -557,18 +627,18 @@ static int savestate_menu_loop(int is_loading)
 	for(;;)
 	{
 		draw_savestate_menu(menu_sel, is_loading);
-		inp = in_menu_wait(PBTN_UP|PBTN_DOWN|PBTN_X|PBTN_CIRCLE, 0);
-		if(inp & PBTN_UP  ) {
+		inp = wait_for_input(BTN_UP|BTN_DOWN|BTN_X|BTN_CIRCLE, 0);
+		if(inp & BTN_UP  ) {
 			do {
 				menu_sel--; if (menu_sel < 0) menu_sel = menu_sel_max;
 			} while (!(state_slot_flags & (1 << menu_sel)) && menu_sel != menu_sel_max && is_loading);
 		}
-		if(inp & PBTN_DOWN) {
+		if(inp & BTN_DOWN) {
 			do {
 				menu_sel++; if (menu_sel > menu_sel_max) menu_sel = 0;
 			} while (!(state_slot_flags & (1 << menu_sel)) && menu_sel != menu_sel_max && is_loading);
 		}
-		if(inp & PBTN_CIRCLE) { // save/load
+		if(inp & BTN_CIRCLE) { // save/load
 			if (menu_sel < 10) {
 				state_slot = menu_sel;
 				PicoStateProgressCB = emu_msg_cb; /* also suitable for menu */
@@ -579,7 +649,7 @@ static int savestate_menu_loop(int is_loading)
 				return 0;
 			} else	return 1;
 		}
-		if(inp & PBTN_X) return 1;
+		if(inp & BTN_X) return 1;
 	}
 }
 
@@ -631,14 +701,14 @@ static int count_bound_keys(int action, int pl_idx)
 
 static void draw_key_config(const me_bind_action *opts, int opt_cnt, int player_idx, int sel)
 {
-	int x, y, tl_y = 16+20, i;
+	int x, y, tl_y = 16+40, i;
 
 	menu_draw_begin();
 	if (player_idx >= 0) {
-		text_out16(80+80, 16, "Player %i controls", player_idx + 1);
+		text_out16(80+80, 16+20, "Player %i controls", player_idx + 1);
 		x = 80+80;
 	} else {
-		text_out16(80+80, 16, "Emulator controls");
+		text_out16(80+80, 16+20, "Emulator controls");
 		x = 80+40;
 	}
 
@@ -671,22 +741,22 @@ static void key_config_loop(const me_bind_action *opts, int opt_cnt, int player_
 	for (;;)
 	{
 		draw_key_config(opts, opt_cnt, player_idx, sel);
-		inp = in_menu_wait(CONFIGURABLE_KEYS|PBTN_SELECT, 1);
-		if (!(inp & PBTN_SELECT)) {
+		inp = wait_for_input(CONFIGURABLE_KEYS|BTN_SELECT, 1);
+		if (!(inp & BTN_SELECT)) {
 			prev_select = 0;
-			if(inp & PBTN_UP  ) { sel--; if (sel < 0) sel = menu_sel_max; continue; }
-			if(inp & PBTN_DOWN) { sel++; if (sel > menu_sel_max) sel = 0; continue; }
+			if(inp & BTN_UP  ) { sel--; if (sel < 0) sel = menu_sel_max; continue; }
+			if(inp & BTN_DOWN) { sel++; if (sel > menu_sel_max) sel = 0; continue; }
 		}
 		if (sel >= opt_cnt) {
-			if (inp & (PBTN_X|PBTN_CIRCLE)) break;
+			if (inp & (BTN_X|BTN_CIRCLE)) break;
 			else continue;
 		}
 		// if we are here, we want to bind/unbind something
-		if ((inp & PBTN_SELECT) && !prev_select)
+		if ((inp & BTN_SELECT) && !prev_select)
 			unbind_action(opts[sel].mask);
-		prev_select = inp & PBTN_SELECT;
+		prev_select = inp & BTN_SELECT;
 		inp &= CONFIGURABLE_KEYS;
-		inp &= ~PBTN_SELECT;
+		inp &= ~BTN_SELECT;
 		for (i = 0; i < 32; i++)
 			if (inp & (1 << i)) {
 				if (count_bound_keys(opts[sel].mask, player_idx) >= 2)
@@ -700,19 +770,6 @@ static void key_config_loop(const me_bind_action *opts, int opt_cnt, int player_
 	}
 }
 
-menu_entry ctrlopt_entries[] =
-{
-	{ "Player 1",                  MB_NONE,  MA_CTRL_PLAYER1,       NULL, 0, 0, 0, 1, 0 },
-	{ "Player 2",                  MB_NONE,  MA_CTRL_PLAYER2,       NULL, 0, 0, 0, 1, 0 },
-	{ "Emulator controls",         MB_NONE,  MA_CTRL_EMU,           NULL, 0, 0, 0, 1, 0 },
-	{ "6 button pad",              MB_ONOFF, MA_OPT_6BUTTON_PAD,   &PicoOpt, 0x020, 0, 0, 1, 1 },
-	{ "Turbo rate",                MB_RANGE, MA_CTRL_TURBO_RATE,   &currentConfig.turbo_rate, 0, 1, 30, 1, 1 },
-	{ "Done",                      MB_NONE,  MA_CTRL_DONE,          NULL, 0, 0, 0, 1, 0 },
-};
-
-#define CTRLOPT_ENTRY_COUNT (sizeof(ctrlopt_entries) / sizeof(ctrlopt_entries[0]))
-const int ctrlopt_entry_count = CTRLOPT_ENTRY_COUNT;
-
 static void draw_kc_sel(int menu_sel)
 {
 	int tl_x = 80+25+40, tl_y = 16+60, y;
@@ -721,7 +778,10 @@ static void draw_kc_sel(int menu_sel)
 	menu_draw_begin();
 	menu_draw_selection(tl_x - 16, tl_y + menu_sel*10, 138);
 
-	me_draw(ctrlopt_entries, ctrlopt_entry_count, tl_x, tl_y, NULL, NULL);
+	text_out16(tl_x, y,       "Player 1");
+	text_out16(tl_x, (y+=10), "Player 2");
+	text_out16(tl_x, (y+=10), "Emulator controls");
+	text_out16(tl_x, (y+=10), "Done");
 
 	menu_draw_end();
 }
@@ -732,45 +792,37 @@ static void draw_kc_sel(int menu_sel)
 // "LOAD STATE", "VOLUME UP", "VOLUME DOWN", "DONE"
 me_bind_action emuctrl_actions[] =
 {
-	{ "Load State       ", 1<<28 },
-	{ "Save State       ", 1<<27 },
-	{ "Prev Save Slot   ", 1<<25 },
-	{ "Next Save Slot   ", 1<<24 },
-	{ "Switch Renderer  ", 1<<26 },
-	{ "Fast forward     ", 1<<22 },
-	{ "Pico Next page   ", 1<<21 },
-	{ "Pico Prev page   ", 1<<20 },
-	{ "Pico Switch input", 1<<19 },
-	{ NULL,                0     }
+	{ "Load State     ", 1<<28 },
+	{ "Save State     ", 1<<27 },
+	{ "Prev Save Slot ", 1<<25 },
+	{ "Next Save Slot ", 1<<24 },
+	{ "Switch Renderer", 1<<26 },
+	{ NULL,              0     }
 };
 
 static void kc_sel_loop(void)
 {
-	int menu_sel = 5, menu_sel_max = 5;
+	int menu_sel = 3, menu_sel_max = 3;
 	unsigned long inp = 0;
-	menu_id selected_id;
+	int is_6button = PicoOpt & POPT_6BTN_PAD;
 
 	while (1)
 	{
 		draw_kc_sel(menu_sel);
-		inp = in_menu_wait(PBTN_UP|PBTN_DOWN|PBTN_LEFT|PBTN_RIGHT|PBTN_X|PBTN_CIRCLE, 0);
-		selected_id = me_index2id(ctrlopt_entries, CTRLOPT_ENTRY_COUNT, menu_sel);
-		if (inp & (PBTN_LEFT|PBTN_RIGHT)) // multi choise
-			me_process(ctrlopt_entries, CTRLOPT_ENTRY_COUNT, selected_id, (inp&PBTN_RIGHT) ? 1 : 0);
-		if (inp & PBTN_UP  ) { menu_sel--; if (menu_sel < 0) menu_sel = menu_sel_max; }
-		if (inp & PBTN_DOWN) { menu_sel++; if (menu_sel > menu_sel_max) menu_sel = 0; }
-		if (inp & PBTN_CIRCLE) {
-			int is_6button = PicoOpt & POPT_6BTN_PAD;
-			switch (selected_id) {
-				case MA_CTRL_PLAYER1: key_config_loop(me_ctrl_actions, is_6button ? 15 : 11, 0); return;
-				case MA_CTRL_PLAYER2: key_config_loop(me_ctrl_actions, is_6button ? 15 : 11, 1); return;
-				case MA_CTRL_EMU:     key_config_loop(emuctrl_actions,
-							sizeof(emuctrl_actions)/sizeof(emuctrl_actions[0]) - 1, -1); return;
-				case MA_CTRL_DONE:    if (!rom_loaded) emu_WriteConfig(0); return;
+		inp = wait_for_input(BTN_UP|BTN_DOWN|BTN_X|BTN_CIRCLE, 0);
+		if (inp & BTN_UP  ) { menu_sel--; if (menu_sel < 0) menu_sel = menu_sel_max; }
+		if (inp & BTN_DOWN) { menu_sel++; if (menu_sel > menu_sel_max) menu_sel = 0; }
+		if (inp & BTN_CIRCLE) {
+			switch (menu_sel) {
+				case 0: key_config_loop(me_ctrl_actions, is_6button ? 12 : 8, 0); return;
+				case 1: key_config_loop(me_ctrl_actions, is_6button ? 12 : 8, 1); return;
+				case 2: key_config_loop(emuctrl_actions,
+						sizeof(emuctrl_actions)/sizeof(emuctrl_actions[0]) - 1, -1); return;
+				case 3: if (!rom_loaded) emu_WriteConfig(0); return;
 				default: return;
 			}
 		}
-		if (inp & PBTN_X) return;
+		if (inp & BTN_X) return;
 	}
 }
 
@@ -783,7 +835,7 @@ menu_entry cdopt_entries[] =
 	{ NULL,                        MB_NONE,  MA_CDOPT_TESTBIOS_EUR, NULL, 0, 0, 0, 1, 0 },
 	{ NULL,                        MB_NONE,  MA_CDOPT_TESTBIOS_JAP, NULL, 0, 0, 0, 1, 0 },
 	{ "CD LEDs",                   MB_ONOFF, MA_CDOPT_LEDS,         &currentConfig.EmuOpt,  0x0400, 0, 0, 1, 1 },
-	{ "CDDA audio",                MB_ONOFF, MA_CDOPT_CDDA,         &PicoOpt, 0x0800, 0, 0, 1, 1 },
+	{ "CDDA audio (using mp3s)",   MB_ONOFF, MA_CDOPT_CDDA,         &PicoOpt, 0x0800, 0, 0, 1, 1 },
 	{ "PCM audio",                 MB_ONOFF, MA_CDOPT_PCM,          &PicoOpt, 0x0400, 0, 0, 1, 1 },
 	{ NULL,                        MB_NONE,  MA_CDOPT_READAHEAD,    NULL, 0, 0, 0, 1, 1 },
 	{ "SaveRAM cart",              MB_ONOFF, MA_CDOPT_SAVERAM,      &PicoOpt, 0x8000, 0, 0, 1, 1 },
@@ -876,14 +928,14 @@ static void cd_menu_loop_options(void)
 	for (;;)
 	{
 		draw_cd_menu_options(menu_sel, &bios_names);
-		inp = in_menu_wait(PBTN_UP|PBTN_DOWN|PBTN_LEFT|PBTN_RIGHT|PBTN_X|PBTN_CIRCLE|PBTN_START, 0);
-		if (inp & PBTN_UP  ) { menu_sel--; if (menu_sel < 0) menu_sel = menu_sel_max; }
-		if (inp & PBTN_DOWN) { menu_sel++; if (menu_sel > menu_sel_max) menu_sel = 0; }
+		inp = wait_for_input(BTN_UP|BTN_DOWN|BTN_LEFT|BTN_RIGHT|BTN_X|BTN_CIRCLE|BTN_START, 0);
+		if (inp & BTN_UP  ) { menu_sel--; if (menu_sel < 0) menu_sel = menu_sel_max; }
+		if (inp & BTN_DOWN) { menu_sel++; if (menu_sel > menu_sel_max) menu_sel = 0; }
 		selected_id = me_index2id(cdopt_entries, CDOPT_ENTRY_COUNT, menu_sel);
-		if (inp & (PBTN_LEFT|PBTN_RIGHT)) { // multi choise
-			if (!me_process(cdopt_entries, CDOPT_ENTRY_COUNT, selected_id, (inp&PBTN_RIGHT) ? 1 : 0) &&
+		if (inp & (BTN_LEFT|BTN_RIGHT)) { // multi choise
+			if (!me_process(cdopt_entries, CDOPT_ENTRY_COUNT, selected_id, (inp&BTN_RIGHT) ? 1 : 0) &&
 			    selected_id == MA_CDOPT_READAHEAD) {
-				if (inp & PBTN_LEFT) {
+				if (inp & BTN_LEFT) {
 					PicoCDBuffers >>= 1;
 					if (PicoCDBuffers < 2) PicoCDBuffers = 0;
 				} else {
@@ -893,12 +945,12 @@ static void cd_menu_loop_options(void)
 				}
 			}
 		}
-		if (inp & PBTN_CIRCLE) // toggleable options
+		if (inp & BTN_CIRCLE) // toggleable options
 			if (!me_process(cdopt_entries, CDOPT_ENTRY_COUNT, selected_id, 1) &&
 			    selected_id == MA_CDOPT_DONE) {
 				return;
 			}
-		if (inp & PBTN_START) {
+		if (inp & BTN_START) {
 			switch (selected_id) { // BIOS testers
 				case MA_CDOPT_TESTBIOS_USA:
 					if (emu_findBios(4, &bios)) { // test US
@@ -925,7 +977,7 @@ static void cd_menu_loop_options(void)
 					break;
 			}
 		}
-		if (inp & PBTN_X) return;
+		if (inp & BTN_X) return;
 	}
 }
 
@@ -1008,7 +1060,7 @@ static void menu_opt3_preview(int is_32col)
 	}
 
 	memset32_uncached(psp_screen, 0, 512*272*2/4);
-	emu_forcedFrame(0);
+	emu_forcedFrame();
 	menu_prepare_bg(1, 0);
 
 	if (oldstate) restore_oldstate(oldstate);
@@ -1039,18 +1091,18 @@ static void dispmenu_loop_options(void)
 	for (;;)
 	{
 		draw_dispmenu_options(menu_sel);
-		inp = in_menu_wait(PBTN_UP|PBTN_DOWN|PBTN_LEFT|PBTN_RIGHT|PBTN_X|PBTN_CIRCLE, 0);
-		if (inp & PBTN_UP  ) { menu_sel--; if (menu_sel < 0) menu_sel = menu_sel_max; }
-		if (inp & PBTN_DOWN) { menu_sel++; if (menu_sel > menu_sel_max) menu_sel = 0; }
+		inp = wait_for_input(BTN_UP|BTN_DOWN|BTN_LEFT|BTN_RIGHT|BTN_X|BTN_CIRCLE, 0);
+		if (inp & BTN_UP  ) { menu_sel--; if (menu_sel < 0) menu_sel = menu_sel_max; }
+		if (inp & BTN_DOWN) { menu_sel++; if (menu_sel > menu_sel_max) menu_sel = 0; }
 		selected_id = me_index2id(opt3_entries, OPT3_ENTRY_COUNT, menu_sel);
 		if (selected_id == MA_OPT3_HSCALE40 &&  is_32col) { is_32col = 0; menu_opt3_preview(is_32col); }
 		if (selected_id == MA_OPT3_HSCALE32 && !is_32col) { is_32col = 1; menu_opt3_preview(is_32col); }
 
-		if (inp & (PBTN_LEFT|PBTN_RIGHT)) // multi choise
+		if (inp & (BTN_LEFT|BTN_RIGHT)) // multi choise
 		{
 			float *setting = NULL;
 			int tmp;
-			me_process(opt3_entries, OPT3_ENTRY_COUNT, selected_id, (inp&PBTN_RIGHT) ? 1 : 0);
+			me_process(opt3_entries, OPT3_ENTRY_COUNT, selected_id, (inp&BTN_RIGHT) ? 1 : 0);
 			switch (selected_id) {
 				case MA_OPT3_SCALE:	setting = &currentConfig.scale; break;
 				case MA_OPT3_HSCALE40:	setting = &currentConfig.hscale40; is_32col = 0; break;
@@ -1060,7 +1112,7 @@ static void dispmenu_loop_options(void)
 				case MA_OPT3_BLACKLVL:	menu_opt3_preview(is_32col); break;
 				case MA_OPT3_VSYNC:
 					tmp = ((currentConfig.EmuOpt>>13)&1) | ((currentConfig.EmuOpt>>15)&2);
-					tmp = (inp & PBTN_LEFT) ? (tmp>>1) : ((tmp<<1)|1);
+					tmp = (inp & BTN_LEFT) ? (tmp>>1) : ((tmp<<1)|1);
 					if (tmp > 3) tmp = 3;
 					currentConfig.EmuOpt &= ~0x12000;
 					currentConfig.EmuOpt |= ((tmp&2)<<15) | ((tmp&1)<<13);
@@ -1068,15 +1120,15 @@ static void dispmenu_loop_options(void)
 				default: break;
 			}
 			if (setting != NULL) {
-				while ((inp = psp_pad_read(0)) & (PBTN_LEFT|PBTN_RIGHT)) {
-					*setting += (inp & PBTN_LEFT) ? -0.01 : 0.01;
+				while ((inp = psp_pad_read(0)) & (BTN_LEFT|BTN_RIGHT)) {
+					*setting += (inp & BTN_LEFT) ? -0.01 : 0.01;
 					if (*setting <= 0) *setting = 0.01;
 					menu_opt3_preview(is_32col);
 					draw_dispmenu_options(menu_sel); // will wait vsync
 				}
 			}
 		}
-		if (inp & PBTN_CIRCLE) { // toggleable options
+		if (inp & BTN_CIRCLE) { // toggleable options
 			me_process(opt3_entries, OPT3_ENTRY_COUNT, selected_id, 1);
 			switch (selected_id) {
 				case MA_OPT3_DONE:
@@ -1103,7 +1155,7 @@ static void dispmenu_loop_options(void)
 				default: break;
 			}
 		}
-		if (inp & PBTN_X) return;
+		if (inp & BTN_X) return;
 	}
 }
 
@@ -1119,8 +1171,7 @@ menu_entry opt2_entries[] =
 	{ "gzip savestates",           MB_ONOFF, MA_OPT2_GZIP_STATES,    &currentConfig.EmuOpt, 0x00008, 0, 0, 1, 1 },
 	{ "Don't save last used ROM",  MB_ONOFF, MA_OPT2_NO_LAST_ROM,    &currentConfig.EmuOpt, 0x00020, 0, 0, 1, 1 },
 	{ "Status line in main menu",  MB_ONOFF, MA_OPT2_STATUS_LINE,    &currentConfig.EmuOpt, 0x20000, 0, 0, 1, 1 },
-	{ "Disable idle loop patching",MB_ONOFF, MA_OPT2_NO_IDLE_LOOPS,  &PicoOpt, 0x80000, 0, 0, 1, 1 },
-	{ "Disable frame limiter",     MB_ONOFF, MA_OPT2_NO_FRAME_LIMIT, &currentConfig.EmuOpt, 0x40000, 0, 0, 1, 1 },
+	{ "Disable frame limitter",    MB_ONOFF, MA_OPT2_NO_FRAME_LIMIT, &currentConfig.EmuOpt, 0x40000, 0, 0, 1, 1 },
 	{ "done",                      MB_NONE,  MA_OPT2_DONE,           NULL, 0, 0, 0, 1, 0 },
 };
 
@@ -1153,23 +1204,23 @@ static void amenu_loop_options(void)
 	for(;;)
 	{
 		draw_amenu_options(menu_sel);
-		inp = in_menu_wait(PBTN_UP|PBTN_DOWN|PBTN_LEFT|PBTN_RIGHT|PBTN_X|PBTN_CIRCLE, 0);
-		if (inp & PBTN_UP  ) { menu_sel--; if (menu_sel < 0) menu_sel = menu_sel_max; }
-		if (inp & PBTN_DOWN) { menu_sel++; if (menu_sel > menu_sel_max) menu_sel = 0; }
+		inp = wait_for_input(BTN_UP|BTN_DOWN|BTN_LEFT|BTN_RIGHT|BTN_X|BTN_CIRCLE, 0);
+		if (inp & BTN_UP  ) { menu_sel--; if (menu_sel < 0) menu_sel = menu_sel_max; }
+		if (inp & BTN_DOWN) { menu_sel++; if (menu_sel > menu_sel_max) menu_sel = 0; }
 		selected_id = me_index2id(opt2_entries, OPT2_ENTRY_COUNT, menu_sel);
-		if (inp & (PBTN_LEFT|PBTN_RIGHT)) { // multi choise
-			if (!me_process(opt2_entries, OPT2_ENTRY_COUNT, selected_id, (inp&PBTN_RIGHT) ? 1 : 0) &&
+		if (inp & (BTN_LEFT|BTN_RIGHT)) { // multi choise
+			if (!me_process(opt2_entries, OPT2_ENTRY_COUNT, selected_id, (inp&BTN_RIGHT) ? 1 : 0) &&
 			    selected_id == MA_OPT2_GAMMA) {
 				// TODO?
 			}
 		}
-		if (inp & PBTN_CIRCLE) { // toggleable options
+		if (inp & BTN_CIRCLE) { // toggleable options
 			if (!me_process(opt2_entries, OPT2_ENTRY_COUNT, selected_id, 1) &&
 			    selected_id == MA_OPT2_DONE) {
 				return;
 			}
 		}
-		if (inp & PBTN_X) return;
+		if (inp & BTN_X) return;
 	}
 }
 
@@ -1179,11 +1230,13 @@ static void amenu_loop_options(void)
 menu_entry opt_entries[] =
 {
 	{ NULL,                        MB_NONE,  MA_OPT_RENDERER,      NULL, 0, 0, 0, 1, 1 },
-	{ "Accurate sprites",          MB_ONOFF, MA_OPT_ACC_SPRITES,   &PicoOpt, 0x080, 0, 0, 0, 1 },
+	{ "Accurate timing (slower)",  MB_ONOFF, MA_OPT_ACC_TIMING,    &PicoOpt, 0x0040, 0, 0, 1, 1 },
+	{ "Accurate sprites (slower)", MB_ONOFF, MA_OPT_ACC_SPRITES,   &PicoOpt, 0x0080, 0, 0, 1, 1 },
 	{ "Show FPS",                  MB_ONOFF, MA_OPT_SHOW_FPS,      &currentConfig.EmuOpt,  0x0002,  0,  0, 1, 1 },
 	{ NULL,                        MB_RANGE, MA_OPT_FRAMESKIP,     &currentConfig.Frameskip,    0, -1, 16, 1, 1 },
 	{ "Enable sound",              MB_ONOFF, MA_OPT_ENABLE_SOUND,  &currentConfig.EmuOpt,  0x0004,  0,  0, 1, 1 },
 	{ NULL,                        MB_NONE,  MA_OPT_SOUND_QUALITY, NULL, 0, 0, 0, 1, 1 },
+	{ "6 button pad",              MB_ONOFF, MA_OPT_6BUTTON_PAD,   &PicoOpt, 0x0020, 0, 0, 1, 1 },
 	{ NULL,                        MB_NONE,  MA_OPT_REGION,        NULL, 0, 0, 0, 1, 1 },
 	{ "Use SRAM/BRAM savestates",  MB_ONOFF, MA_OPT_SRAM_STATES,   &currentConfig.EmuOpt,  0x0001, 0, 0, 1, 1 },
 	{ NULL,                        MB_NONE,  MA_OPT_CONFIRM_STATES,NULL, 0, 0, 0, 1, 1 },
@@ -1333,12 +1386,12 @@ static int menu_loop_options(void)
 	while (1)
 	{
 		draw_menu_options(menu_sel);
-		inp = in_menu_wait(PBTN_UP|PBTN_DOWN|PBTN_LEFT|PBTN_RIGHT|PBTN_X|PBTN_CIRCLE, 0);
-		if (inp & PBTN_UP  ) { menu_sel--; if (menu_sel < 0) menu_sel = menu_sel_max; }
-		if (inp & PBTN_DOWN) { menu_sel++; if (menu_sel > menu_sel_max) menu_sel = 0; }
+		inp = wait_for_input(BTN_UP|BTN_DOWN|BTN_LEFT|BTN_RIGHT|BTN_X|BTN_CIRCLE, 0);
+		if (inp & BTN_UP  ) { menu_sel--; if (menu_sel < 0) menu_sel = menu_sel_max; }
+		if (inp & BTN_DOWN) { menu_sel++; if (menu_sel > menu_sel_max) menu_sel = 0; }
 		selected_id = me_index2id(opt_entries, OPT_ENTRY_COUNT, menu_sel);
-		if (inp & (PBTN_LEFT|PBTN_RIGHT)) { // multi choise
-			if (!me_process(opt_entries, OPT_ENTRY_COUNT, selected_id, (inp&PBTN_RIGHT) ? 1 : 0)) {
+		if (inp & (BTN_LEFT|BTN_RIGHT)) { // multi choise
+			if (!me_process(opt_entries, OPT_ENTRY_COUNT, selected_id, (inp&BTN_RIGHT) ? 1 : 0)) {
 				switch (selected_id) {
 					case MA_OPT_RENDERER:
 						if ((PicoOpt & 0x10) || !(currentConfig.EmuOpt & 0x80)) {
@@ -1350,14 +1403,14 @@ static int menu_loop_options(void)
 						}
 						break;
 					case MA_OPT_SOUND_QUALITY:
-						PsndRate = sndrate_prevnext(PsndRate, inp & PBTN_RIGHT);
+						PsndRate = sndrate_prevnext(PsndRate, inp & BTN_RIGHT);
 						break;
 					case MA_OPT_REGION:
-						region_prevnext(inp & PBTN_RIGHT);
+						region_prevnext(inp & BTN_RIGHT);
 						break;
 					case MA_OPT_CONFIRM_STATES: {
 							 int n = ((currentConfig.EmuOpt>>9)&1) | ((currentConfig.EmuOpt>>10)&2);
-							 n += (inp & PBTN_LEFT) ? -1 : 1;
+							 n += (inp & BTN_LEFT) ? -1 : 1;
 							 if (n < 0) n = 0; else if (n > 3) n = 3;
 							 n |= n << 1; n &= ~2;
 							 currentConfig.EmuOpt &= ~0xa00;
@@ -1365,14 +1418,14 @@ static int menu_loop_options(void)
 							 break;
 						 }
 					case MA_OPT_SAVE_SLOT:
-						 if (inp & PBTN_RIGHT) {
+						 if (inp & BTN_RIGHT) {
 							 state_slot++; if (state_slot > 9) state_slot = 0;
 						 } else {state_slot--; if (state_slot < 0) state_slot = 9;
 						 }
 						 break;
 					case MA_OPT_CPU_CLOCKS:
-						 while ((inp = psp_pad_read(0)) & (PBTN_LEFT|PBTN_RIGHT)) {
-							 currentConfig.CPUclock += (inp & PBTN_LEFT) ? -1 : 1;
+						 while ((inp = psp_pad_read(0)) & (BTN_LEFT|BTN_RIGHT)) {
+							 currentConfig.CPUclock += (inp & BTN_LEFT) ? -1 : 1;
 							 if (currentConfig.CPUclock <  19) currentConfig.CPUclock = 19;
 							 if (currentConfig.CPUclock > 333) currentConfig.CPUclock = 333;
 							 draw_menu_options(menu_sel); // will wait vsync
@@ -1381,7 +1434,7 @@ static int menu_loop_options(void)
 					case MA_OPT_SAVECFG:
 					case MA_OPT_SAVECFG_GAME:
 					case MA_OPT_LOADCFG:
-						 config_slot += (inp&PBTN_RIGHT) ? 1 : -1;
+						 config_slot += (inp&BTN_RIGHT) ? 1 : -1;
 						 if (config_slot > 9) config_slot = 0;
 						 if (config_slot < 0) config_slot = 9;
 						 me_enable(opt_entries, OPT_ENTRY_COUNT, MA_OPT_LOADCFG, config_slot != config_slot_current);
@@ -1394,7 +1447,7 @@ static int menu_loop_options(void)
 				}
 			}
 		}
-		if (inp & PBTN_CIRCLE) {
+		if (inp & BTN_CIRCLE) {
 			if (!me_process(opt_entries, OPT_ENTRY_COUNT, selected_id, 1))
 			{
 				switch (selected_id)
@@ -1432,7 +1485,7 @@ static int menu_loop_options(void)
 				}
 			}
 		}
-		if(inp & PBTN_X) {
+		if(inp & BTN_X) {
 			menu_options_save();
 			return 0;  // done (update, no write)
 		}
@@ -1454,14 +1507,12 @@ static void draw_menu_credits(void)
 	text_out16(tl_x, (y+=10), "Chui: Fame/C");
 	text_out16(tl_x, (y+=10), "NJ: CZ80");
 	text_out16(tl_x, (y+=10), "MAME devs: YM2612 and SN76496 cores");
+	text_out16(tl_x, (y+=10), "Stephane Dallongeville:");
+	text_out16(tl_x, (y+=10), "    Gens code, base of Fame/C, CZ80");
+	text_out16(tl_x, (y+=10), "Charles MacDonald: Genesis hw docs");
+	text_out16(tl_x, (y+=10), "Haze: Genesis hw info");
 	text_out16(tl_x, (y+=10), "ps2dev.org people: PSP SDK/code");
 	text_out16(tl_x, (y+=10), "ketchupgun: skin design");
-
-	text_out16(tl_x, (y+=20), "special thanks (for docs, ideas):");
-	text_out16(tl_x, (y+=10), " Charles MacDonald, Haze,");
-	text_out16(tl_x, (y+=10), " Stephane Dallongeville,");
-	text_out16(tl_x, (y+=10), " Lordus, Exophase, Rokas,");
-	text_out16(tl_x, (y+=10), " Nemesis, Tasco Deluxe");
 
 	menu_draw_end();
 }
@@ -1534,29 +1585,29 @@ static void menu_loop_root(void)
 	/* make sure action buttons are not pressed on entering menu */
 	draw_menu_root(menu_sel);
 
-	while (psp_pad_read(1) & (PBTN_X|PBTN_CIRCLE|PBTN_SELECT)) psp_msleep(50);
+	while (psp_pad_read(1) & (BTN_X|BTN_CIRCLE|BTN_SELECT)) psp_msleep(50);
 
 	for (;;)
 	{
 		draw_menu_root(menu_sel);
-		inp = in_menu_wait(PBTN_UP|PBTN_DOWN|PBTN_X|PBTN_CIRCLE|PBTN_SELECT|PBTN_L|PBTN_R, 0);
-		if(inp & PBTN_UP  )  { menu_sel--; if (menu_sel < 0) menu_sel = menu_sel_max; }
-		if(inp & PBTN_DOWN)  { menu_sel++; if (menu_sel > menu_sel_max) menu_sel = 0; }
-		if((inp & (PBTN_L|PBTN_R)) == (PBTN_L|PBTN_R)) debug_menu_loop();
-		if( inp & (PBTN_SELECT|PBTN_X)) {
+		inp = wait_for_input(BTN_UP|BTN_DOWN|BTN_X|BTN_CIRCLE|BTN_SELECT|BTN_L|BTN_R, 0);
+		if(inp & BTN_UP  )  { menu_sel--; if (menu_sel < 0) menu_sel = menu_sel_max; }
+		if(inp & BTN_DOWN)  { menu_sel++; if (menu_sel > menu_sel_max) menu_sel = 0; }
+		if((inp & (BTN_L|BTN_R)) == (BTN_L|BTN_R)) debug_menu_loop();
+		if( inp & (BTN_SELECT|BTN_X)) {
 			if (rom_loaded) {
-				while (psp_pad_read(1) & (PBTN_SELECT|PBTN_X)) psp_msleep(50); // wait until released
+				while (psp_pad_read(1) & (BTN_SELECT|BTN_X)) psp_msleep(50); // wait until released
 				engineState = PGS_Running;
 				break;
 			}
 		}
-		if(inp & PBTN_CIRCLE)  {
+		if(inp & BTN_CIRCLE)  {
 			menuErrorMsg[0] = 0; // clear error msg
 			switch (me_index2id(main_entries, MAIN_ENTRY_COUNT, menu_sel))
 			{
 				case MA_MAIN_RESUME_GAME:
 					if (rom_loaded) {
-						while (psp_pad_read(1) & PBTN_CIRCLE) psp_msleep(50);
+						while (psp_pad_read(1) & BTN_CIRCLE) psp_msleep(50);
 						engineState = PGS_Running;
 						return;
 					}
@@ -1573,7 +1624,6 @@ static void menu_loop_root(void)
 					if (rom_loaded) {
 						if(savestate_menu_loop(1))
 							continue;
-						while (psp_pad_read(1) & PBTN_CIRCLE) psp_msleep(50);
 						engineState = PGS_Running;
 						return;
 					}
@@ -1581,7 +1631,6 @@ static void menu_loop_root(void)
 				case MA_MAIN_RESET_GAME:
 					if (rom_loaded) {
 						emu_ResetGame();
-						while (psp_pad_read(1) & PBTN_CIRCLE) psp_msleep(50);
 						engineState = PGS_Running;
 						return;
 					}
@@ -1590,10 +1639,10 @@ static void menu_loop_root(void)
 				{
 					char curr_path[PATH_MAX], *selfname;
 					FILE *tstf;
-					if ( (tstf = fopen(loadedRomFName, "rb")) )
+					if ( (tstf = fopen(lastRomFile, "rb")) )
 					{
 						fclose(tstf);
-						strcpy(curr_path, loadedRomFName);
+						strcpy(curr_path, lastRomFile);
 					}
 					else
 						getcwd(curr_path, PATH_MAX);
@@ -1618,8 +1667,8 @@ static void menu_loop_root(void)
 					draw_menu_credits();
 					psp_msleep(500);
 					inp = 0;
-					while (!(inp & (PBTN_X|PBTN_CIRCLE)))
-						inp = in_menu_wait(PBTN_X|PBTN_CIRCLE, 0);
+					while (!(inp & (BTN_X|BTN_CIRCLE)))
+						inp = wait_for_input(BTN_X|BTN_CIRCLE, 0);
 					break;
 				case MA_MAIN_EXIT:
 					engineState = PGS_Quit;
@@ -1640,7 +1689,8 @@ static void menu_loop_root(void)
 	}
 }
 
-void menu_darken_bg(void *dst, const void *src, int pixels, int darker)
+// warning: alignment
+static void menu_darken_bg(void *dst, const void *src, int pixels, int darker)
 {
 	unsigned int *dest = dst;
 	const unsigned int *srce = src;
@@ -1735,10 +1785,10 @@ int menu_loop_tray(void)
 
 	menu_gfx_prepare();
 
-	if ( (tstf = fopen(loadedRomFName, "rb")) )
+	if ( (tstf = fopen(lastRomFile, "rb")) )
 	{
 		fclose(tstf);
-		strcpy(curr_path, loadedRomFName);
+		strcpy(curr_path, lastRomFile);
 	}
 	else
 	{
@@ -1747,22 +1797,22 @@ int menu_loop_tray(void)
 
 	/* make sure action buttons are not pressed on entering menu */
 	draw_menu_tray(menu_sel);
-	while (psp_pad_read(1) & PBTN_CIRCLE) psp_msleep(50);
+	while (psp_pad_read(1) & BTN_CIRCLE) psp_msleep(50);
 
 	for (;;)
 	{
 		draw_menu_tray(menu_sel);
-		inp = in_menu_wait(PBTN_UP|PBTN_DOWN|PBTN_CIRCLE, 0);
-		if(inp & PBTN_UP  )  { menu_sel--; if (menu_sel < 0) menu_sel = menu_sel_max; }
-		if(inp & PBTN_DOWN)  { menu_sel++; if (menu_sel > menu_sel_max) menu_sel = 0; }
-		if(inp & PBTN_CIRCLE)  {
+		inp = wait_for_input(BTN_UP|BTN_DOWN|BTN_CIRCLE, 0);
+		if(inp & BTN_UP  )  { menu_sel--; if (menu_sel < 0) menu_sel = menu_sel_max; }
+		if(inp & BTN_DOWN)  { menu_sel++; if (menu_sel > menu_sel_max) menu_sel = 0; }
+		if(inp & BTN_CIRCLE)  {
 			switch (menu_sel) {
 				case 0: // select image
 					selfname = romsel_loop(curr_path);
 					if (selfname) {
 						int ret = -1;
 						cd_img_type cd_type;
-						cd_type = emu_cdCheck(NULL, romFileName);
+						cd_type = emu_cdCheck(NULL);
 						if (cd_type != CIT_NOT_CD)
 							ret = Insert_CD(romFileName, cd_type);
 						if (ret != 0) {

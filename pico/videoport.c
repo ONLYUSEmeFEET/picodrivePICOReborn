@@ -1,17 +1,18 @@
-// PicoDrive
+// This is part of Pico Library
 
 // (c) Copyright 2004 Dave, All rights reserved.
-// (c) Copyright 2006-2008, Grazvydas "notaz" Ignotas
+// (c) Copyright 2006-2007, Grazvydas "notaz" Ignotas
 // Free for non-commercial use.
 
 // For commercial use, separate licencing terms must be obtained.
 
 
-#include "pico_int.h"
+#include "PicoInt.h"
 #include "cd/gfx_cd.h"
 
 extern const unsigned char  hcounts_32[];
 extern const unsigned char  hcounts_40[];
+extern const unsigned short vcounts[];
 
 #ifndef UTYPES_DEFINED
 typedef unsigned char  u8;
@@ -35,15 +36,14 @@ static void VideoWrite(u16 d)
   {
     case 1: if(a&1) d=(u16)((d<<8)|(d>>8)); // If address is odd, bytes are swapped (which game needs this?)
             Pico.vram [(a>>1)&0x7fff]=d;
-            if (a - ((unsigned)(Pico.video.reg[5]&0x7f) << 9) < 0x400)
-              rendstatus |= PDRAW_DIRTY_SPRITES;
-            break;
+            rendstatus |= PDRAW_DIRTY_SPRITES; break;
     case 3: Pico.m.dirtyPal = 1;
             Pico.cram [(a>>1)&0x003f]=d; break; // wraps (Desert Strike)
     case 5: Pico.vsram[(a>>1)&0x003f]=d; break;
     //default:elprintf(EL_ANOMALY, "VDP write %04x with bad type %i", d, Pico.video.type); break;
   }
 
+  //dprintf("w[%i] @ %04x, inc=%i [%i|%i]", Pico.video.type, a, Pico.video.reg[0xf], Pico.m.scanline, SekCyclesDone());
   AutoIncrement();
 }
 
@@ -92,9 +92,14 @@ static void DmaSlow(int len)
     Pico.video.type, source, a, len, inc, (Pico.video.status&8)||!(Pico.video.reg[1]&0x40),
     SekCyclesDone(), SekPc);
 
-  Pico.m.dma_xfers += len;
-  if ((PicoAHW & PAHW_MCD) && (PicoOpt & POPT_EN_MCD_PSYNC)) SekCyclesBurn(CheckDMA());
-  else SekEndTimeslice(SekCyclesLeftNoMCD - CheckDMA());
+  if (Pico.m.scanline != -1) {
+    Pico.m.dma_xfers += len;
+    if ((PicoAHW & PAHW_MCD) && (PicoOpt & POPT_EN_MCD_PSYNC)) SekCyclesBurn(CheckDMA());
+    else SekSetCyclesLeftNoMCD(SekCyclesLeftNoMCD - CheckDMA());
+  } else {
+    // be approximate in non-accurate mode
+    SekSetCyclesLeft(SekCyclesLeft - (len*(((488<<8)/167))>>8));
+  }
 
   if ((source&0xe00000)==0xe00000) { // Ram
     pd=(u16 *)(Pico.ram+(source&0xfffe));
@@ -225,15 +230,16 @@ static void DmaCopy(int len)
   elprintf(EL_VDPDMA, "DmaCopy len %i [%i]", len, SekCyclesDone());
 
   Pico.m.dma_xfers += len;
-  Pico.video.status |= 2; // dma busy
+  if(Pico.m.scanline != -1)
+    Pico.video.status|=2; // dma busy
 
   source =Pico.video.reg[0x15];
   source|=Pico.video.reg[0x16]<<8;
   vrs=vr+source;
 
-  if (source+len > 0x10000) len=0x10000-source; // clip??
+  if(source+len > 0x10000) len=0x10000-source; // clip??
 
-  for (; len; len--)
+  for(;len;len--)
   {
     vr[a] = *vrs++;
     // AutoIncrement
@@ -258,16 +264,17 @@ static void DmaFill(int data)
   elprintf(EL_VDPDMA, "DmaFill len %i inc %i [%i]", len, inc, SekCyclesDone());
 
   Pico.m.dma_xfers += len;
-  Pico.video.status |= 2; // dma busy
+  if(Pico.m.scanline != -1)
+    Pico.video.status|=2; // dma busy (in accurate mode)
 
   // from Charles MacDonald's genvdp.txt:
   // Write lower byte to address specified
   vr[a] = (unsigned char) data;
   a=(u16)(a+inc);
 
-  if (!inc) len=1;
+  if(!inc) len=1;
 
-  for (; len; len--) {
+  for(;len;len--) {
     // Write upper byte to adjacent address
     // (here we are byteswapped, so address is already 'adjacent')
     vr[a] = high;
@@ -316,32 +323,14 @@ static void CommandChange(void)
   if (cmd&0x80) CommandDma();
 }
 
-static __inline void DrawSync(int blank_on)
-{
-  if (Pico.m.scanline < 224 && !(PicoOpt & POPT_ALT_RENDERER) &&
-      !PicoSkipFrame && DrawScanline <= Pico.m.scanline) {
-    //elprintf(EL_ANOMALY, "sync");
-    PicoDrawSync(Pico.m.scanline, blank_on);
-  }
-}
-
 PICO_INTERNAL_ASM void PicoVideoWrite(unsigned int a,unsigned short d)
 {
   struct PicoVideo *pvid=&Pico.video;
 
-  //if (Pico.m.scanline < 224)
-  //  elprintf(EL_STATUS, "PicoVideoWrite [%06x] %04x", a, d);
   a&=0x1c;
 
   if (a==0x00) // Data port 0 or 2
   {
-    // try avoiding the sync..
-    if (Pico.m.scanline < 224 && (pvid->reg[1]&0x40) &&
-        !(!pvid->pending &&
-          ((pvid->command & 0xc00000f0) == 0x40000010 && Pico.vsram[pvid->addr>>1] == d))
-       )
-      DrawSync(0);
-
     if (pvid->pending) {
       CommandChange();
       pvid->pending=0;
@@ -355,7 +344,7 @@ PICO_INTERNAL_ASM void PicoVideoWrite(unsigned int a,unsigned short d)
     else
     {
       // preliminary FIFO emulation for Chaos Engine, The (E)
-      if (!(pvid->status&8) && (pvid->reg[1]&0x40) && !(PicoOpt&POPT_DIS_VDP_FIFO)) // active display?
+      if(!(pvid->status&8) && (pvid->reg[1]&0x40) && Pico.m.scanline!=-1 && !(PicoOpt&POPT_DIS_VDP_FIFO)) // active display, accurate mode?
       {
         pvid->status&=~0x200; // FIFO no longer empty
         pvid->lwrite_cnt++;
@@ -364,8 +353,7 @@ PICO_INTERNAL_ASM void PicoVideoWrite(unsigned int a,unsigned short d)
           SekCyclesBurn(32); // penalty // 488/12-8
           if (SekCycleCnt>=SekCycleAim) SekEndRun(0);
         }
-        elprintf(EL_ASVDP, "VDP data write: %04x [%06x] {%i} #%i @ %06x", d, Pico.video.addr,
-                 Pico.video.type, pvid->lwrite_cnt, SekPc);
+        elprintf(EL_ASVDP, "VDP data write: %04x {%i} #%i @ %06x", d, Pico.video.type, pvid->lwrite_cnt, SekPc);
       }
       VideoWrite(d);
     }
@@ -374,9 +362,8 @@ PICO_INTERNAL_ASM void PicoVideoWrite(unsigned int a,unsigned short d)
 
   if (a==0x04) // Control (command) port 4 or 6
   {
-    if (pvid->pending)
+    if(pvid->pending)
     {
-      if (d & 0x80) DrawSync(0); // only need sync for DMA
       // Low word of command:
       pvid->command&=0xffff0000;
       pvid->command|=d;
@@ -390,16 +377,13 @@ PICO_INTERNAL_ASM void PicoVideoWrite(unsigned int a,unsigned short d)
         // Register write:
         int num=(d>>8)&0x1f;
         int dold=pvid->reg[num];
-        int blank_on = 0;
         pvid->type=0; // register writes clear command (else no Sega logo in Golden Axe II)
         if (num > 0x0a && !(pvid->reg[1]&4)) {
           elprintf(EL_ANOMALY, "%02x written to reg %02x in SMS mode @ %06x", d, num, SekPc);
           return;
-        }
+        } else
+          pvid->reg[num]=(unsigned char)d;
 
-        if (num == 1 && !(d&0x40) && SekCyclesLeft > 390) blank_on = 1;
-        DrawSync(blank_on);
-        pvid->reg[num]=(unsigned char)d;
         switch (num)
         {
           case 0x00:
@@ -409,9 +393,9 @@ PICO_INTERNAL_ASM void PicoVideoWrite(unsigned int a,unsigned short d)
           case 0x01:
             elprintf(EL_INTSW, "vint_onoff: %i->%i [%i] pend=%i @ %06x", (dold&0x20)>>5,
                     (d&0x20)>>5, SekCyclesDone(), (pvid->pending_ints&0x20)>>5, SekPc);
+            if (!(d&0x40) && SekCyclesLeft > 390) rendstatus |= PDRAW_EARLY_BLANK;
             goto update_irq;
           case 0x05:
-            //elprintf(EL_STATUS, "spritep moved to %04x", (unsigned)(Pico.video.reg[5]&0x7f) << 9);
             if (d^dold) rendstatus |= PDRAW_SPRITES_MOVED;
             break;
           case 0x0c:
@@ -421,19 +405,22 @@ PICO_INTERNAL_ASM void PicoVideoWrite(unsigned int a,unsigned short d)
         }
         return;
 
-update_irq:
+update_irq:;
 #ifndef EMU_CORE_DEBUG
-        // update IRQ level
+        // update IRQ level (Lemmings, Wiz 'n' Liz intro, ... )
+        // may break if done improperly:
+        // International Superstar Soccer Deluxe (crash), Street Racer (logos), Burning Force (gfx),
+        // Fatal Rewind (crash), Sesame Street Counting Cafe
         if (!SekShouldInterrupt) // hack
         {
           int lines, pints, irq=0;
           lines = (pvid->reg[1] & 0x20) | (pvid->reg[0] & 0x10);
           pints = (pvid->pending_ints&lines);
-               if (pints & 0x20) irq = 6;
-          else if (pints & 0x10) irq = 4;
+               if(pints & 0x20) irq = 6;
+          else if(pints & 0x10) irq = 4;
           SekInterrupt(irq); // update line
 
-          if (irq) SekEndRun(24); // make it delayed
+          if (irq && Pico.m.scanline!=-1) SekEndRun(24); // make it delayed
         }
 #endif
       }
@@ -450,24 +437,32 @@ update_irq:
 
 PICO_INTERNAL_ASM unsigned int PicoVideoRead(unsigned int a)
 {
+  unsigned int d=0;
+
   a&=0x1c;
+
+
+  if (a==0x00) // data port
+  {
+    d=VideoRead();
+    goto end;
+  }
 
   if (a==0x04) // control port
   {
     struct PicoVideo *pv=&Pico.video;
-    unsigned int d;
     d=pv->status;
-    //if (PicoOpt&POPT_ALT_RENDERER) d|=0x0020; // sprite collision (Shadow of the Beast)
+    if (PicoOpt&POPT_ALT_RENDERER) d|=0x0020; // sprite collision (Shadow of the Beast)
+    if (!(pv->reg[1]&0x40))        d|=0x0008; // set V-Blank if display is disabled
     if (SekCyclesLeft < 84+4)      d|=0x0004; // H-Blank (Sonic3 vs)
 
-    d |= ((pv->reg[1]&0x40)^0x40) >> 3;  // set V-Blank if display is disabled
-    d |= (pv->pending_ints&0x20)<<2;     // V-int pending?
+    d|=(pv->pending_ints&0x20)<<2; // V-int pending?
     if (d&0x100) pv->status&=~0x100; // FIFO no longer full
 
-    pv->pending = 0; // ctrl port reads clear write-pending flag (Charles MacDonald)
+    pv->pending=0; // ctrl port reads clear write-pending flag (Charles MacDonald)
 
     elprintf(EL_SR, "SR read: %04x @ %06x", d, SekPc);
-    return d;
+    goto end;
   }
 
   // H-counter info (based on Generator):
@@ -487,61 +482,42 @@ PICO_INTERNAL_ASM unsigned int PicoVideoRead(unsigned int a)
   // check: Sonic 3D Blast bonus, Cannon Fodder, Chase HQ II, 3 Ninjas kick back, Road Rash 3, Skitchin', Wheel of Fortune
   if ((a&0x1c)==0x08)
   {
-    unsigned int d;
-    int lineCycles;
+    unsigned int hc;
 
-    lineCycles = (488-SekCyclesLeft)&0x1ff;
-    if (Pico.video.reg[12]&1)
-         d = hcounts_40[lineCycles];
-    else d = hcounts_32[lineCycles];
+    if(Pico.m.scanline != -1) {
+      int lineCycles=(488-SekCyclesLeft)&0x1ff;
+      d=Pico.m.scanline; // V-Counter
 
-    elprintf(EL_HVCNT, "hv: %02x %02x (%i) @ %06x", d, Pico.video.v_counter, SekCyclesDone(), SekPc);
-    return d | (Pico.video.v_counter << 8);
+      if(Pico.video.reg[12]&1)
+           hc=hcounts_40[lineCycles];
+      else hc=hcounts_32[lineCycles];
+
+      //if(lineCycles > 488-12) d++; // Wheel of Fortune
+    } else {
+      // get approximate V-Counter
+      d=vcounts[SekCyclesDone()>>8];
+      hc = Pico.m.rotate&0xff;
+    }
+
+    if(Pico.m.pal) {
+      if(d >= 0x103) d-=56; // based on Gens
+    } else {
+      if(d >= 0xEB)  d-=6;
+    }
+
+    if((Pico.video.reg[12]&6) == 6) {
+      // interlace mode 2 (Combat Cars (UE) [!])
+      d <<= 1;
+      if (d&0xf00) d|= 1;
+    }
+
+    elprintf(EL_HVCNT, "hv: %02x %02x (%i) @ %06x", hc, d, SekCyclesDone(), SekPc);
+    d&=0xff; d<<=8;
+    d|=hc;
+    goto end;
   }
 
-  if (a==0x00) // data port
-  {
-    return VideoRead();
-  }
+end:
 
-  return 0;
-}
-
-unsigned int PicoVideoRead8(unsigned int a)
-{
-  unsigned int d;
-  a&=0x1d;
-
-  switch (a)
-  {
-    case 0: return VideoRead() >> 8;
-    case 1: return VideoRead() & 0xff;
-    case 4: // control port/status reg
-      d = Pico.video.status >> 8;
-      if (d&1) Pico.video.status&=~0x100; // FIFO no longer full
-      Pico.video.pending = 0;
-      elprintf(EL_SR, "SR read (h): %02x @ %06x", d, SekPc);
-      return d;
-    case 5:
-      d = Pico.video.status & 0xff;
-      //if (PicoOpt&POPT_ALT_RENDERER) d|=0x0020; // sprite collision (Shadow of the Beast)
-      d |= ((Pico.video.reg[1]&0x40)^0x40) >> 3;  // set V-Blank if display is disabled
-      d |= (Pico.video.pending_ints&0x20)<<2;     // V-int pending?
-      if (SekCyclesLeft < 84+4) d |= 4;    // H-Blank
-      Pico.video.pending = 0;
-      elprintf(EL_SR, "SR read (l): %02x @ %06x", d, SekPc);
-      return d;
-    case 8: // hv counter
-      elprintf(EL_HVCNT, "vcounter: %02x (%i) @ %06x", Pico.video.v_counter, SekCyclesDone(), SekPc);
-      return Pico.video.v_counter;
-    case 9:
-      d = (488-SekCyclesLeft)&0x1ff;
-      if (Pico.video.reg[12]&1)
-           d = hcounts_40[d];
-      else d = hcounts_32[d];
-      elprintf(EL_HVCNT, "hcounter: %02x (%i) @ %06x", d, SekCyclesDone(), SekPc);
-      return d;
-  }
-
-  return 0;
+  return d;
 }

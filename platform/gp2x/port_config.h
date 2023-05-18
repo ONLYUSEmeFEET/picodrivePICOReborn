@@ -8,10 +8,6 @@
 #define REDUCE_IO_CALLS 0
 #define SIMPLE_WRITE_SOUND 0
 
-#define SCREEN_SIZE_FIXED 1
-#define SCREEN_WIDTH  320
-#define SCREEN_HEIGHT 240
-
 // draw.c
 #define OVERRIDE_HIGHCOL 0
 
@@ -23,14 +19,9 @@
 #define CAN_HANDLE_240_LINES	1
 
 // logging emu events
-#define EL_LOGMASK (EL_STATUS|EL_IDLE) // (EL_STATUS|EL_ANOMALY|EL_UIO|EL_SRAMIO|EL_INTS|EL_CDPOLL) // xffff
+#define EL_LOGMASK EL_STATUS // (EL_STATUS|EL_ANOMALY|EL_UIO|EL_SRAMIO|EL_INTS|EL_CDPOLL) // xffff
 
 //#define dprintf(f,...) printf("%05i:%03i: " f "\n",Pico.m.frame_count,Pico.m.scanline,##__VA_ARGS__)
 #define dprintf(x...)
-
-// platform
-#define PATH_SEP      "/"
-#define PATH_SEP_C    '/'
-#define MENU_X2       0
 
 #endif //PORT_CONFIG_H

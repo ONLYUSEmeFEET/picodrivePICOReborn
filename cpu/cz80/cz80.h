@@ -24,7 +24,7 @@ extern "C" {
 #endif
 
 #ifndef INT8
-#define INT8	signed char
+#define INT8	char
 #endif
 
 #ifndef UINT16
@@ -32,7 +32,7 @@ extern "C" {
 #endif
 
 #ifndef INT16
-#define INT16	signed short
+#define INT16	short
 #endif
 
 #ifndef UINT32
@@ -40,7 +40,7 @@ extern "C" {
 #endif
 
 #ifndef INT32
-#define INT32	signed int
+#define INT32	int
 #endif
 
 /*************************************/
@@ -61,7 +61,7 @@ extern "C" {
 //#else
 #define CZ80_ENCRYPTED_ROM		0
 //#endif
-#define CZ80_EMULATE_R_EXACTLY	1
+#define CZ80_EMULATE_R_EXACTLY	0
 
 #define zR8(A)		(*CPU->pzR8[A])
 #define zR16(A)		(CPU->pzR16[A]->W)

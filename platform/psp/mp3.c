@@ -11,8 +11,8 @@
 #include <pspaudiocodec.h>
 #include <kubridge.h>
 
-#include "../../pico/pico_int.h"
-#include "../../pico/sound/mix.h"
+#include "../../Pico/PicoInt.h"
+#include "../../Pico/sound/mix.h"
 #include "../common/lprintf.h"
 
 int mp3_last_error = 0;
@@ -372,9 +372,6 @@ void mp3_start_play(FILE *f, int pos)
 		mp3_src_size = sceIoLseek32(mp3_handle, 0, PSP_SEEK_END);
 		mp3_fname = fname;
 	}
-
-	// clear decoder state
-	sceAudiocodecInit(mp3_codec_struct, 0x1002);
 
 	// seek..
 	mp3_src_pos = (int) (((float)pos / 1023.0f) * (float)mp3_src_size);

@@ -2,14 +2,12 @@
  * bin_to_cso_mp3
  * originally written by Exophase as "bin_to_iso_ogg"
  * updated for cso/mp3 by notaz
- * v2
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <string.h>
-#include <ctype.h>
 
 #ifndef MAX_PATH
 #define MAX_PATH 1024
@@ -102,24 +100,8 @@ static void myexit(int code)
 
 char *skip_whitespace(char *str)
 {
-  while (isspace(*str))
+  while(*str == ' ')
     str++;
-
-  return str;
-}
-
-char *skip_whitespace_rev(char *str)
-{
-  while (isspace(*str))
-    str--;
-
-  return str;
-}
-
-char *skip_nonspace_rev(char *str)
-{
-  while (!isspace(*str))
-    str--;
 
   return str;
 }
@@ -134,7 +116,6 @@ s32 load_bin_cue(char *cue_file_name)
   {
     char line_buffer[256];
     char *line_buffer_ptr;
-    char *tmp;
 
     char bin_file_name[MAX_PATH];
     char *separator_pos;
@@ -148,31 +129,11 @@ s32 load_bin_cue(char *cue_file_name)
     u32 i;
 
     // First, get filename. Only support binary right now.
-    tmp = fgets(line_buffer, 255, cue_file);
-    if (tmp == NULL) goto invalid;
-    separator_pos = line_buffer + strlen(line_buffer) - 1;
-    separator_pos = skip_whitespace_rev(separator_pos);
-    if (separator_pos <= line_buffer) goto invalid;
-    separator_pos = skip_nonspace_rev(separator_pos);
-    if (separator_pos <= line_buffer) goto invalid;
-    separator_pos = skip_whitespace_rev(separator_pos);
-    if (separator_pos <= line_buffer) goto invalid;
-    // see if what's there is a quote.
-    if(*separator_pos == '"')
-    {
-      separator_pos[0] = 0;
-      separator_pos = strrchr(line_buffer, '"');
-      if (separator_pos == NULL) goto invalid;
-      strcpy(bin_file_name, separator_pos + 1);
-    }
-    else
-    {
-      // Otherwise go to the next space.
-      separator_pos[1] = 0;
-      separator_pos = strrchr(line_buffer, ' ');
-      if (separator_pos == NULL) goto invalid;
-      strcpy(bin_file_name, separator_pos + 1);
-    }
+    fgets(line_buffer, 255, cue_file);
+
+    strcpy(bin_file_name, strchr(line_buffer, '"') + 1);
+
+    *(strrchr(bin_file_name, '"')) = 0;
 
     // Might have to change directory first.
     separator_pos = strrchr(cue_file_name, DIR_SEPARATOR_CHAR);
@@ -192,6 +153,8 @@ s32 load_bin_cue(char *cue_file_name)
       cd_bin.bin_file = fopen(bin_file_name, "rb");
 #endif
 
+      printf("loaded bin file %s (%p)\n", bin_file_name, cd_bin.bin_file);
+
       *separator_pos = DIR_SEPARATOR_CHAR;
       chdir(current_dir);
     }
@@ -202,16 +165,6 @@ s32 load_bin_cue(char *cue_file_name)
 #else
       cd_bin.bin_file = fopen(bin_file_name, "rb");
 #endif
-    }
-
-    if (cd_bin.bin_file == NULL)
-    {
-      printf("can't open bin file: \"%s\"\n", bin_file_name);
-      return -1;
-    }
-    else
-    {
-      printf("found bin file: %s\n", bin_file_name);
     }
 
     for(i = 0; i < 100; i++)
@@ -385,9 +338,6 @@ s32 load_bin_cue(char *cue_file_name)
     return 0;
   }
 
-  return -1;
-invalid:
-  printf("error: invalid/unsupported .cue file\n");
   return -1;
 }
 
@@ -650,9 +600,9 @@ s32 convert_bin_cue(char *output_name_base)
 #ifdef _WIN32
 static void update_path(void)
 {
-  char buff1[MAX_PATH*4], *buff2;
+  char buff1[MAX_PATH], buff2[MAX_PATH];
   char *path;
-  int size, i;
+  int i;
 
   path = getenv("PATH");
   GetModuleFileNameA(NULL, buff1, sizeof(buff1));
@@ -660,13 +610,8 @@ static void update_path(void)
     if (buff1[i] == '\\') break;
   buff1[i] = 0;
 
-  size = strlen(path) + strlen(buff1) + 3;
-  buff2 = malloc(size);
-  if (buff2 == NULL) return;
-
-  snprintf(buff2, size, "%s;%s", path, buff1);
+  snprintf(buff2, sizeof(buff2), "%s;%s", path, buff1);
   SetEnvironmentVariableA("PATH", buff2);
-  free(buff2);
 }
 #endif
 

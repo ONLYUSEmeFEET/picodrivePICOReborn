@@ -10,13 +10,12 @@
 #include "../common/emu.h"
 #include "../common/lprintf.h"
 #include "../common/arm_utils.h"
-#include "../common/config.h"
 #include "emu.h"
 #include "menu.h"
 #include "giz.h"
 #include "asm_utils.h"
 
-#include <pico/pico_int.h>
+#include <Pico/PicoInt.h>
 
 #ifdef BENCHMARK
 #define OSD_FPS_X 220
@@ -26,8 +25,13 @@
 
 // main 300K gfx-related buffer. Used by menu and renderers.
 unsigned char gfx_buffer[321*240*2*2];
-unsigned char *PicoDraw2FB = gfx_buffer;  // temporary buffer for alt renderer ( (8+320)*(8+240+8) )
+char romFileName[MAX_PATH];
+int engineState;
 
+unsigned char *PicoDraw2FB = gfx_buffer;  // temporary buffer for alt renderer ( (8+320)*(8+240+8) )
+int reset_timing = 0;
+
+static DWORD noticeMsgTime = 0;
 static short *snd_cbuff = NULL;
 static int snd_cbuf_samples = 0, snd_all_samples = 0;
 
@@ -35,74 +39,113 @@ static int snd_cbuf_samples = 0, snd_all_samples = 0;
 static void blit(const char *fps, const char *notice);
 static void clearArea(int full);
 
-int plat_get_root_dir(char *dst, int len)
+void emu_noticeMsgUpdated(void)
+{
+	noticeMsgTime = GetTickCount();
+}
+
+void emu_getMainDir(char *dst, int len)
 {
 	if (len > 0) *dst = 0;
-
-	return 0;
 }
 
 static void emu_msg_cb(const char *msg)
 {
-	if (giz_screen != NULL) fb_unlock();
-	giz_screen = fb_lock(1);
+	if (giz_screen != NULL) Framework2D_UnlockBuffer();
+	giz_screen = Framework2D_LockBuffer(1);
 
 	memset32((int *)((char *)giz_screen + 321*232*2), 0, 321*8*2/4);
-	emu_text_out16(4, 232, msg);
+	emu_textOut16(4, 232, msg);
 	noticeMsgTime = GetTickCount() - 2000;
 
 	/* assumption: emu_msg_cb gets called only when something slow is about to happen */
 	reset_timing = 1;
 
-	fb_unlock();
-	giz_screen = fb_lock((currentConfig.EmuOpt&0x8000) ? 0 : 1);
+	Framework2D_UnlockBuffer();
+	giz_screen = Framework2D_LockBuffer((currentConfig.EmuOpt&0x8000) ? 0 : 1);
 }
 
 void emu_stateCb(const char *str)
 {
-	if (giz_screen != NULL) fb_unlock();
-	giz_screen = fb_lock(1);
+	if (giz_screen != NULL) Framework2D_UnlockBuffer();
+	giz_screen = Framework2D_LockBuffer(1);
 
 	clearArea(0);
 	blit("", str);
 
-	fb_unlock();
+	Framework2D_UnlockBuffer();
 	giz_screen = NULL;
 
 	Sleep(0); /* yield the CPU, the system may need it */
 }
 
-void pemu_prep_defconfig(void)
+static void emu_msg_tray_open(void)
 {
-	memset(&defaultConfig, 0, sizeof(defaultConfig));
-	defaultConfig.EmuOpt    = 0x1d | 0x680; // | confirm_save, cd_leds, 16bit rend
-	defaultConfig.s_PicoOpt = 0x0f | POPT_EN_MCD_PCM|POPT_EN_MCD_CDDA|POPT_EN_SVP_DRC|POPT_ACC_SPRITES;
-	defaultConfig.s_PsndRate = 22050;
-	defaultConfig.s_PicoRegion = 0; // auto
-	defaultConfig.s_PicoAutoRgnOrder = 0x184; // US, EU, JP
-	defaultConfig.s_PicoCDBuffers = 0;
-	defaultConfig.Frameskip = -1; // auto
-	defaultConfig.volume = 50;
-	defaultConfig.KeyBinds[ 2] = 1<<0; // SACB RLDU
-	defaultConfig.KeyBinds[ 3] = 1<<1;
-	defaultConfig.KeyBinds[ 0] = 1<<2;
-	defaultConfig.KeyBinds[ 1] = 1<<3;
-	defaultConfig.KeyBinds[ 5] = 1<<4;
-	defaultConfig.KeyBinds[ 6] = 1<<5;
-	defaultConfig.KeyBinds[ 7] = 1<<6;
-	defaultConfig.KeyBinds[ 4] = 1<<7;
-	defaultConfig.KeyBinds[13] = 1<<26; // switch rend
-	defaultConfig.KeyBinds[ 8] = 1<<27; // save state
-	defaultConfig.KeyBinds[ 9] = 1<<28; // load state
-	defaultConfig.KeyBinds[12] = 1<<29; // vol up
-	defaultConfig.KeyBinds[11] = 1<<30; // vol down
-	defaultConfig.scaling = 0;
-	defaultConfig.turbo_rate = 15;
+	strcpy(noticeMsg, "CD tray opened");
+	noticeMsgTime = GetTickCount();
+}
+
+
+void emu_Init(void)
+{
+	// make dirs for saves, cfgs, etc.
+	mkdir("mds", 0777);
+	mkdir("srm", 0777);
+	mkdir("brm", 0777);
+	mkdir("cfg", 0777);
+
+	PicoInit();
+	PicoMessage = emu_msg_cb;
+	PicoMCDopenTray = emu_msg_tray_open;
+	PicoMCDcloseTray = menu_loop_tray;
+}
+
+void emu_Deinit(void)
+{
+	// save SRAM
+	if ((currentConfig.EmuOpt & 1) && SRam.changed) {
+		emu_SaveLoadGame(0, 1);
+		SRam.changed = 0;
+	}
+
+	if (!(currentConfig.EmuOpt & 0x20))
+		config_writelrom(PicoConfigFile);
+
+	PicoExit();
+}
+
+void emu_setDefaultConfig(void)
+{
+	memset(&currentConfig, 0, sizeof(currentConfig));
+	currentConfig.lastRomFile[0] = 0;
+	currentConfig.EmuOpt  = 0x1f | 0x680; // | confirm_save, cd_leds, 16bit rend
+	currentConfig.PicoOpt = 0x07 | 0xc00; // | cd_pcm, cd_cdda
+	currentConfig.PsndRate = 22050;
+	currentConfig.PicoRegion = 0; // auto
+	currentConfig.PicoAutoRgnOrder = 0x184; // US, EU, JP
+	currentConfig.Frameskip = -1; // auto
+	currentConfig.volume = 50;
+	currentConfig.KeyBinds[ 2] = 1<<0; // SACB RLDU
+	currentConfig.KeyBinds[ 3] = 1<<1;
+	currentConfig.KeyBinds[ 0] = 1<<2;
+	currentConfig.KeyBinds[ 1] = 1<<3;
+	currentConfig.KeyBinds[ 5] = 1<<4;
+	currentConfig.KeyBinds[ 6] = 1<<5;
+	currentConfig.KeyBinds[ 7] = 1<<6;
+	currentConfig.KeyBinds[ 4] = 1<<7;
+	currentConfig.KeyBinds[13] = 1<<26; // switch rend
+	currentConfig.KeyBinds[ 8] = 1<<27; // save state
+	currentConfig.KeyBinds[ 9] = 1<<28; // load state
+	currentConfig.KeyBinds[12] = 1<<29; // vol up
+	currentConfig.KeyBinds[11] = 1<<30; // vol down
+	currentConfig.PicoCDBuffers = 0;
+	currentConfig.scaling = 0;
 }
 
 
 static int EmuScanBegin16(unsigned int num)
 {
+	if (!(Pico.video.reg[1]&8)) num += 8;
 	DrawLineDest = (unsigned short *) giz_screen + 321 * num;
 
 	if ((currentConfig.EmuOpt&0x4000) && (num&1) == 0) // (Pico.m.frame_count&1))
@@ -114,6 +157,7 @@ static int EmuScanBegin16(unsigned int num)
 static int EmuScanBegin8(unsigned int num)
 {
 	// draw like the fast renderer
+	if (!(Pico.video.reg[1]&8)) num += 8;
 	HighCol = gfx_buffer + 328 * num;
 
 	return 0;
@@ -128,7 +172,7 @@ static void osd_text(int x, int y, const char *text)
 		p = (int *) ((int)p & ~3); // align
 		memset32(p, 0, len);
 	}
-	emu_text_out16(x, y, text);
+	emu_textOut16(x, y, text);
 }
 
 /*
@@ -169,9 +213,6 @@ static void blit(const char *fps, const char *notice)
 			Pico.m.dirtyPal = 0;
 			vidConvCpyRGB565(localPal, Pico.cram, 0x40);
 		}
-		// a hack for VR
-		if (PicoAHW & PAHW_SVP)
-			memset32((int *)(PicoDraw2FB+328*8+328*223), 0xe0e0e0e0, 328);
 		if (!(Pico.video.reg[12]&1)) lines_flags|=0x10000;
 		if (currentConfig.EmuOpt&0x4000)
 			lines_flags|=0x40000; // (Pico.m.frame_count&1)?0x20000:0x40000;
@@ -187,7 +228,7 @@ static void blit(const char *fps, const char *notice)
 			if (Pico.video.reg[0xC]&8) { // shadow/hilight mode
 				//vidConvCpyRGB32sh(localPal+0x40, Pico.cram, 0x40);
 				//vidConvCpyRGB32hi(localPal+0x80, Pico.cram, 0x40); // TODO?
-				memcpy32((void *)(localPal+0xc0), (void *)(localPal+0x40), 0x40*2/4);
+				blockcpy(localPal+0xc0, localPal+0x40, 0x40*2);
 				localPal[0xc0] = 0x0600;
 				localPal[0xd0] = 0xc000;
 				localPal[0xe0] = 0x0000; // reserved pixels for OSD
@@ -220,13 +261,13 @@ static void blit(const char *fps, const char *notice)
 static void clearArea(int full)
 {
 	if (giz_screen == NULL)
-		giz_screen = fb_lock(1);
+		giz_screen = Framework2D_LockBuffer(1);
 	if (full) memset32(giz_screen, 0, 320*240*2/4);
 	else      memset32((int *)((char *)giz_screen + 321*232*2), 0, 321*8*2/4);
 
 	if (currentConfig.EmuOpt&0x8000) {
-		fb_unlock();
-		giz_screen = fb_lock(0);
+		Framework2D_UnlockBuffer();
+		giz_screen = Framework2D_LockBuffer(0);
 		if (full) memset32(giz_screen, 0, 320*240*2/4);
 		else      memset32((int *)((char *)giz_screen + 321*232*2), 0, 321*8*2/4);
 	}
@@ -234,7 +275,7 @@ static void clearArea(int full)
 
 static void vidResetMode(void)
 {
-	giz_screen = fb_lock(1);
+	giz_screen = Framework2D_LockBuffer(1);
 
 	if (PicoOpt&0x10) {
 	} else if (currentConfig.EmuOpt&0x80) {
@@ -255,11 +296,11 @@ static void vidResetMode(void)
 
 	memset32(giz_screen, 0, 321*240*2/4);
 	if (currentConfig.EmuOpt&0x8000) {
-		fb_unlock();
-		giz_screen = fb_lock(0);
+		Framework2D_UnlockBuffer();
+		giz_screen = Framework2D_LockBuffer(0);
 		memset32(giz_screen, 0, 321*240*2/4);
 	}
-	fb_unlock();
+	Framework2D_UnlockBuffer();
 	giz_screen = NULL;
 }
 
@@ -302,24 +343,24 @@ static void SkipFrame(void)
 }
 
 /* forced frame to front buffer */
-void pemu_forced_frame(int opts)
+void emu_forcedFrame(void)
 {
 	int po_old = PicoOpt;
 	int eo_old = currentConfig.EmuOpt;
 
-	PicoOpt &= ~0x10;
-	PicoOpt |= opts|POPT_ACC_SPRITES;
+	PicoOpt &= ~0x0010;
+	PicoOpt |=  0x4080; // soft_scale | acc_sprites
 	currentConfig.EmuOpt |= 0x80;
 
 	if (giz_screen == NULL)
-		giz_screen = fb_lock(1);
+		giz_screen = Framework2D_LockBuffer(1);
 
 	PicoDrawSetColorFormat(1);
 	PicoScanBegin = EmuScanBegin16;
 	Pico.m.dirtyPal = 1;
 	PicoFrameDrawOnly();
 
-	fb_unlock();
+	Framework2D_UnlockBuffer();
 	giz_screen = NULL;
 
 	PicoOpt = po_old;
@@ -336,17 +377,17 @@ static void RunEvents(unsigned int which)
 		if (PsndOut != NULL)
 			FrameworkAudio_SetPause(1);
 		if (giz_screen == NULL)
-			giz_screen = fb_lock(1);
-		if ( emu_check_save_file(state_slot) &&
+			giz_screen = Framework2D_LockBuffer(1);
+		if ( emu_checkSaveFile(state_slot) &&
 				(( (which & 0x1000) && (currentConfig.EmuOpt & 0x800)) || // load
 				 (!(which & 0x1000) && (currentConfig.EmuOpt & 0x200))) ) // save
 		{
 			int keys;
 			blit("", (which & 0x1000) ? "LOAD STATE? (PLAY=yes, STOP=no)" : "OVERWRITE SAVE? (PLAY=yes, STOP=no)");
-			while( !((keys = Framework_PollGetButtons()) & (PBTN_PLAY|PBTN_STOP)) )
+			while( !((keys = Framework_PollGetButtons()) & (BTN_PLAY|BTN_STOP)) )
 				Sleep(50);
-			if (keys & PBTN_STOP) do_it = 0;
-			while(  ((keys = Framework_PollGetButtons()) & (PBTN_PLAY|PBTN_STOP)) ) // wait for release
+			if (keys & BTN_STOP) do_it = 0;
+			while(  ((keys = Framework_PollGetButtons()) & (BTN_PLAY|BTN_STOP)) ) // wait for release
 				Sleep(50);
 			clearArea(0);
 		}
@@ -355,7 +396,7 @@ static void RunEvents(unsigned int which)
 		{
 			osd_text(4, 232, (which & 0x1000) ? "LOADING GAME" : "SAVING GAME");
 			PicoStateProgressCB = emu_stateCb;
-			emu_save_load_game((which & 0x1000) >> 12, 0);
+			emu_SaveLoadGame((which & 0x1000) >> 12, 0);
 			PicoStateProgressCB = NULL;
 			Sleep(0);
 		}
@@ -390,7 +431,7 @@ static void RunEvents(unsigned int which)
 			state_slot += 1;
 			if(state_slot > 9) state_slot = 0;
 		}
-		sprintf(noticeMsg, "SAVE SLOT %i [%s]", state_slot, emu_check_save_file(state_slot) ? "USED" : "FREE");
+		sprintf(noticeMsg, "SAVE SLOT %i [%s]", state_slot, emu_checkSaveFile(state_slot) ? "USED" : "FREE");
 		noticeMsgTime = GetTickCount();
 	}
 }
@@ -401,18 +442,42 @@ static void updateKeys(void)
 	static unsigned int prevEvents = 0;
 	int i;
 
-	/* FIXME: port to input fw, merge with emu.c:emu_update_input() */
 	keys = Framework_PollGetButtons();
-	if (keys & PBTN_HOME)
+	if (keys & BTN_HOME)
 		engineState = PGS_Menu;
 
 	keys &= CONFIGURABLE_KEYS;
 
-	PicoPad[0] = allActions[0] & 0xfff;
-	PicoPad[1] = allActions[1] & 0xfff;
+	for (i = 0; i < 32; i++)
+	{
+		if (keys & (1 << i))
+		{
+			int pl, acts = currentConfig.KeyBinds[i];
+			if (!acts) continue;
+			pl = (acts >> 16) & 1;
+			if (kb_combo_keys & (1 << i))
+			{
+				int u = i+1, acts_c = acts & kb_combo_acts;
+				// let's try to find the other one
+				if (acts_c) {
+					for (; u < 32; u++)
+						if ( (keys & (1 << u)) && (currentConfig.KeyBinds[u] & acts_c) ) {
+							allActions[pl] |= acts_c & currentConfig.KeyBinds[u];
+							keys &= ~((1 << i) | (1 << u));
+							break;
+						}
+				}
+				// add non-combo actions if combo ones were not found
+				if (!acts_c || u == 32)
+					allActions[pl] |= acts & ~kb_combo_acts;
+			} else {
+				allActions[pl] |= acts;
+			}
+		}
+	}
 
-	if (allActions[0] & 0x7000) emu_DoTurbo(&PicoPad[0], allActions[0]);
-	if (allActions[1] & 0x7000) emu_DoTurbo(&PicoPad[1], allActions[1]);
+	PicoPad[0] = (unsigned short) allActions[0];
+	PicoPad[1] = (unsigned short) allActions[1];
 
 	events = (allActions[0] | allActions[1]) >> 16;
 
@@ -438,9 +503,6 @@ static void updateKeys(void)
 	prevEvents = (allActions[0] | allActions[1]) >> 16;
 }
 
-void plat_debug_cat(char *str)
-{
-}
 
 static void simpleWait(DWORD until)
 {
@@ -456,7 +518,7 @@ static void simpleWait(DWORD until)
 		spend_cycles(1024*2);
 }
 
-void pemu_loop(void)
+void emu_Loop(void)
 {
 	static int PsndRate_old = 0, PicoOpt_old = 0, pal_old = 0;
 	char fpsbuff[24]; // fps count c string
@@ -475,6 +537,7 @@ void pemu_loop(void)
 	else PicoOpt&=~0x4000;
 	Pico.m.dirtyPal = 1;
 	oldmodes = ((Pico.video.reg[12]&1)<<2) ^ 0xc;
+	emu_findKeyBindCombos();
 
 	// pal/ntsc might have changed, reset related stuff
 	target_fps = Pico.m.pal ? 50 : 60;
@@ -650,17 +713,17 @@ void pemu_loop(void)
 
 		if (currentConfig.EmuOpt&0x80)
 			/* be sure correct framebuffer is locked */
-			giz_screen = fb_lock((currentConfig.EmuOpt&0x8000) ? 0 : 1);
+			giz_screen = Framework2D_LockBuffer((currentConfig.EmuOpt&0x8000) ? 0 : 1);
 
 		PicoFrame();
 
 		if (giz_screen == NULL)
-			giz_screen = fb_lock((currentConfig.EmuOpt&0x8000) ? 0 : 1);
+			giz_screen = Framework2D_LockBuffer((currentConfig.EmuOpt&0x8000) ? 0 : 1);
 
 		blit(fpsbuff, notice);
 
 		if (giz_screen != NULL) {
-			fb_unlock();
+			Framework2D_UnlockBuffer();
 			giz_screen = NULL;
 		}
 
@@ -668,7 +731,7 @@ void pemu_loop(void)
 			Framework2D_WaitVSync();
 
 		if (currentConfig.EmuOpt&0x8000)
-			fb_flip();
+			Framework2D_Flip();
 
 		// check time
 		tval = GetTickCount();
@@ -700,8 +763,15 @@ void pemu_loop(void)
 	// save SRAM
 	if ((currentConfig.EmuOpt & 1) && SRam.changed) {
 		emu_stateCb("Writing SRAM/BRAM..");
-		emu_save_load_game(0, 1);
+		emu_SaveLoadGame(0, 1);
 		SRam.changed = 0;
 	}
+}
+
+
+void emu_ResetGame(void)
+{
+	PicoReset();
+	reset_timing = 1;
 }
 

@@ -1,7 +1,7 @@
-#include "../../../pico/sound/ym2612.h"
+#include "../../../Pico/sound/ym2612.h"
 #include "../../common/helix/pub/mp3dec.h"
 
-// max 16 jobs, lower num means higher prio
+// max 16 jobs
 enum _940_job_t {
 	JOB940_INITALL = 1,
 	JOB940_INVALIDATE_DCACHE,
@@ -9,10 +9,6 @@ enum _940_job_t {
 	JOB940_YM2612UPDATEONE,
 	JOB940_MP3DECODE,
 	JOB940_PICOSTATELOAD,
-	JOB940_PICOSTATESAVE2,
-	JOB940_PICOSTATELOAD2_PREP,
-	JOB940_PICOSTATELOAD2,
-	JOB940_MP3RESET,
 };
 
 //#define MAX_940JOBS	2

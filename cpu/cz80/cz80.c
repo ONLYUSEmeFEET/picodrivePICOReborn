@@ -15,7 +15,7 @@
 
 #if PICODRIVE_HACKS
 #undef EMU_M68K
-#include <pico/pico_int.h>
+#include <Pico/PicoInt.h>
 #endif
 
 #ifndef ALIGN_DATA
@@ -219,10 +219,7 @@ void Cz80_Reset(cz80_struc *CPU)
 #if PICODRIVE_HACKS
 static inline unsigned char picodrive_read(unsigned short a)
 {
-	unsigned long v = z80_read_map[a >> Z80_MEM_SHIFT];
-	if (v & 0x80000000)
-		return ((z80_read_f *)(v << 1))(a);
-	return *(unsigned char *)((v << 1) + a);
+	return (a < 0x4000) ? Pico.zram[a&0x1fff] : z80_read(a);
 }
 #endif
 
@@ -245,7 +242,6 @@ INT32 Cz80_Exec(cz80_struc *CPU, INT32 cycles)
 	UINT32 res;
 	UINT32 val;
 	int afterEI = 0;
-	union16 *data;
 
 	PC = CPU->PC;
 #if CZ80_ENCRYPTED_ROM
@@ -259,8 +255,7 @@ INT32 Cz80_Exec(cz80_struc *CPU, INT32 cycles)
 Cz80_Exec:
 		if (CPU->ICount > 0)
 		{
-Cz80_Exec_nocheck:
-			data = pzHL;
+			union16 *data = pzHL;
 			Opcode = READ_OP();
 #if CZ80_EMULATE_R_EXACTLY
 			zR++;
@@ -275,8 +270,6 @@ Cz80_Check_Interrupt:
 			if (CPU->IRQState != CLEAR_LINE)
 			{
 				CHECK_INT
-				CPU->ICount -= CPU->ExtraCycles;
-				CPU->ExtraCycles = 0;
 			}
 			goto Cz80_Exec;
 		}

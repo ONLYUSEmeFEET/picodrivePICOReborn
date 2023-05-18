@@ -20,20 +20,19 @@
 #include "psp.h"
 #include "emu.h"
 #include "../common/lprintf.h"
-#include "version.h"
 
 extern int pico_main(void);
 
 #ifndef FW15
 
-PSP_MODULE_INFO("PicoDrive", 0, 1, 51);
+PSP_MODULE_INFO("PicoDrive", 0, 1, 40);
 PSP_HEAP_SIZE_MAX();
 
 int main() { return pico_main(); }	/* just a wrapper */
 
 #else
 
-PSP_MODULE_INFO("PicoDrive", 0x1000, 1, 51);
+PSP_MODULE_INFO("PicoDrive", 0x1000, 1, 40);
 PSP_MAIN_THREAD_ATTR(0);
 
 int main()
@@ -58,11 +57,10 @@ int main()
 
 #endif
 
-int psp_unhandled_suspend = 0;
-
 unsigned int __attribute__((aligned(16))) guCmdList[GU_CMDLIST_SIZE];
 
 void *psp_screen = VRAM_FB0;
+int psp_unhandled_suspend = 0;
 
 static int current_screen = 0; /* front bufer */
 
@@ -80,19 +78,22 @@ static int exit_callback(int arg1, int arg2, void *common)
 /* Power Callback */
 static int power_callback(int unknown, int pwrflags, void *common)
 {
+	static int old_state = PGS_Menu;
+
 	lprintf("power_callback: flags: 0x%08X\n", pwrflags);
 
 	/* check for power switch and suspending as one is manual and the other automatic */
 	if (pwrflags & PSP_POWER_CB_POWER_SWITCH || pwrflags & PSP_POWER_CB_SUSPENDING || pwrflags & PSP_POWER_CB_STANDBY)
 	{
-		psp_unhandled_suspend = 1;
-		if (engineState != PGS_Suspending)
-			engineStateSuspend = engineState;
-		sceKernelDelayThread(100000); // ??
+		if (engineState != PGS_Suspending) {
+			old_state = engineState;
+			engineState = PGS_Suspending;
+		}
 	}
 	else if (pwrflags & PSP_POWER_CB_RESUME_COMPLETE)
 	{
-		engineState = PGS_SuspendWake;
+		engineState = old_state;
+		psp_unhandled_suspend = 1;
 	}
 
 	//sceDisplayWaitVblankStart();
@@ -128,7 +129,6 @@ void psp_init(void)
 
 	main_thread_id = sceKernelGetThreadId();
 
-	lprintf("\n%s\n", "PicoDrive v" VERSION " " __DATE__ " " __TIME__);
 	lprintf("running on %08x kernel\n", sceKernelDevkitVersion()),
 	lprintf("entered psp_init, threadId %08x, priority %i\n", main_thread_id,
 		sceKernelGetThreadCurrentPriority());
@@ -224,11 +224,11 @@ unsigned int psp_pad_read(int blocking)
 	buttons = pad.Buttons;
 
 	// analog..
-	buttons &= ~(PBTN_NUB_UP|PBTN_NUB_DOWN|PBTN_NUB_LEFT|PBTN_NUB_RIGHT);
-	if (pad.Lx < 128 - ANALOG_DEADZONE) buttons |= PBTN_NUB_LEFT;
-	if (pad.Lx > 128 + ANALOG_DEADZONE) buttons |= PBTN_NUB_RIGHT;
-	if (pad.Ly < 128 - ANALOG_DEADZONE) buttons |= PBTN_NUB_UP;
-	if (pad.Ly > 128 + ANALOG_DEADZONE) buttons |= PBTN_NUB_DOWN;
+	buttons &= ~(BTN_NUB_UP|BTN_NUB_DOWN|BTN_NUB_LEFT|BTN_NUB_RIGHT);
+	if (pad.Lx < 128 - ANALOG_DEADZONE) buttons |= BTN_NUB_LEFT;
+	if (pad.Lx > 128 + ANALOG_DEADZONE) buttons |= BTN_NUB_RIGHT;
+	if (pad.Ly < 128 - ANALOG_DEADZONE) buttons |= BTN_NUB_UP;
+	if (pad.Ly > 128 + ANALOG_DEADZONE) buttons |= BTN_NUB_DOWN;
 
 	return buttons;
 }
@@ -276,18 +276,16 @@ void psp_resume_suspend(void)
 	SceUID fd;
 	int i;
 	for (i = 0; i < 30; i++) {
-		fd = sceIoOpen("EBOOT.PBP", PSP_O_RDONLY, 0777);
-		if (fd >= 0) break;
-		sceKernelDelayThread(100 * 1024);
+		fd = sceIoOpen("dummy.txt", PSP_O_WRONLY|PSP_O_APPEND, 0777);
+		if (fd != 0x80010013) break; // device not available
+		sceKernelDelayThread(32 * 1024);
 	}
 	if (fd >= 0) sceIoClose(fd);
 	sceDisplayWaitVblankStart();
+	psp_unhandled_suspend = 0;
 	if (i < 30)
-		lprintf("io resumed after %i tries\n", i);
-	else {
-		lprintf("io resume failed with %08x\n", fd);
-		sceKernelDelayThread(500 * 1024);
-	}
+	     lprintf("io resumed after %i tries\n", i);
+	else lprintf("io resume failed\n");
 }
 
 /* alt logging */
@@ -303,8 +301,6 @@ typedef struct _log_entry
 static log_entry *le_root = NULL;
 #endif
 
-/* strange: if this function leaks memory (before psp_init() call?),
- * resume after suspend breaks on 3.90 */
 void lprintf(const char *fmt, ...)
 {
 	va_list vl;

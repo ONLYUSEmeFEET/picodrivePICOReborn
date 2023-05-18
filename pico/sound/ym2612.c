@@ -116,7 +116,7 @@
 #ifndef EXTERNAL_YM2612
 #include <stdlib.h>
 // let it be 1 global to simplify things
-YM2612 ym2612;
+static YM2612 ym2612;
 
 #else
 extern YM2612 *ym2612_940;
@@ -381,7 +381,7 @@ static const UINT8 dt_tab[4 * 32]={
 	5, 6, 6, 7, 8, 8, 9,10,11,12,13,14,16,16,16,16,
 /* FD=3 */
 	2, 2, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 6, 6, 7,
-	8 ,8, 9,10,11,12,13,14,16,17,19,20,22,22,22,22
+	8 , 8, 9,10,11,12,13,14,16,17,19,20,22,22,22,22
 };
 
 
@@ -889,7 +889,7 @@ static void chan_render_loop(chan_rend_context *ct, int *buffer, int length)
 		{
 			int out = 0;
 
-			if (ct->pack&0xf000) out = ((ct->op1_out>>16) + ((ct->op1_out<<16)>>16)) << ((ct->pack&0xf000)>>12); /* op1_out0 + op1_out1 */
+			if (ct->pack&0xf000) out = ((ct->op1_out>>16) + (ct->op1_out<<16>>16)) << ((ct->pack&0xf000)>>12); /* op1_out0 + op1_out1 */
 			ct->op1_out <<= 16;
 			ct->op1_out |= (unsigned short)op_calc1(ct->phase1, eg_out, out);
 		} else {
@@ -1087,25 +1087,12 @@ void chan_render_loop(chan_rend_context *ct, int *buffer, unsigned short length)
 
 static chan_rend_context crct;
 
-static void chan_render_prep(void)
-{
-	crct.eg_timer_add = ym2612.OPN.eg_timer_add;
-	crct.lfo_inc = ym2612.OPN.lfo_inc;
-}
-
-static void chan_render_finish(void)
-{
-	ym2612.OPN.eg_cnt = crct.eg_cnt;
-	ym2612.OPN.eg_timer = crct.eg_timer;
-	g_lfo_ampm = crct.pack >> 16; // need_save
-	ym2612.OPN.lfo_cnt = crct.lfo_cnt;
-}
-
 static int chan_render(int *buffer, int length, int c, UINT32 flags) // flags: stereo, ?, disabled, ?, pan_r, pan_l
 {
 	crct.CH = &ym2612.CH[c];
 	crct.mem = crct.CH->mem_value;		/* one sample delay memory */
 	crct.lfo_cnt = ym2612.OPN.lfo_cnt;
+	crct.lfo_inc = ym2612.OPN.lfo_inc;
 
 	flags &= 0x35;
 
@@ -1122,6 +1109,7 @@ static int chan_render(int *buffer, int length, int c, UINT32 flags) // flags: s
 
 	crct.eg_cnt = ym2612.OPN.eg_cnt;			/* envelope generator counter */
 	crct.eg_timer = ym2612.OPN.eg_timer;
+	crct.eg_timer_add = ym2612.OPN.eg_timer_add;
 
 	/* precalculate phase modulation incr */
 	crct.phase1 = crct.CH->SLOT[SLOT1].phase;
@@ -1152,9 +1140,9 @@ static int chan_render(int *buffer, int length, int c, UINT32 flags) // flags: s
 			UINT32 fn;
 			int kc,fc;
 
-			blk = block_fnum >> 11;
 			block_fnum = block_fnum*2 + lfo_fn_table_index_offset;
 
+			blk = (block_fnum&0x7000) >> 12;
 			fn  = block_fnum & 0xfff;
 
 			/* keyscale code */
@@ -1197,20 +1185,25 @@ static int chan_render(int *buffer, int length, int c, UINT32 flags) // flags: s
 	else
 		ym2612.slot_mask &= ~(0xf << (c*4));
 
+	// if this the last call, write back persistent stuff:
+	if ((ym2612.slot_mask >> ((c+1)*4)) == 0)
+	{
+		ym2612.OPN.eg_cnt = crct.eg_cnt;
+		ym2612.OPN.eg_timer = crct.eg_timer;
+		g_lfo_ampm = crct.pack >> 16;
+		ym2612.OPN.lfo_cnt = crct.lfo_cnt;
+	}
+
 	return (crct.algo & 8) >> 3; // had output
 }
 
 /* update phase increment and envelope generator */
 INLINE void refresh_fc_eg_slot(FM_SLOT *SLOT, int fc, int kc)
 {
-	int ksr, fdt;
+	int ksr;
 
 	/* (frequency) phase increment counter */
-	fdt = fc+SLOT->DT[kc];
-	/* detect overflow */
-//	if (fdt < 0) fdt += fn_table[0x7ff*2] >> (7-blk-1);
-	if (fdt < 0) fdt += fn_table[0x7ff*2] >> 2;
-	SLOT->Incr = fdt*SLOT->mul >> 1;
+	SLOT->Incr = ((fc+SLOT->DT[kc])*SLOT->mul) >> 1;
 
 	ksr = kc >> SLOT->KSR;
 	if( SLOT->ksr != ksr )
@@ -1219,10 +1212,10 @@ INLINE void refresh_fc_eg_slot(FM_SLOT *SLOT, int fc, int kc)
 		SLOT->ksr = ksr;
 
 		/* calculate envelope generator rates */
-		if ((SLOT->ar + ksr) < 32+62)
+		if ((SLOT->ar + SLOT->ksr) < 32+62)
 		{
-			eg_sh  = eg_rate_shift [SLOT->ar  + ksr ];
-			eg_sel = eg_rate_select[SLOT->ar  + ksr ];
+			eg_sh  = eg_rate_shift [SLOT->ar  + SLOT->ksr ];
+			eg_sel = eg_rate_select[SLOT->ar  + SLOT->ksr ];
 		}
 		else
 		{
@@ -1232,18 +1225,18 @@ INLINE void refresh_fc_eg_slot(FM_SLOT *SLOT, int fc, int kc)
 
 		SLOT->eg_pack_ar = eg_inc_pack[eg_sel] | (eg_sh<<24);
 
-		eg_sh  = eg_rate_shift [SLOT->d1r + ksr];
-		eg_sel = eg_rate_select[SLOT->d1r + ksr];
+		eg_sh  = eg_rate_shift [SLOT->d1r + SLOT->ksr];
+		eg_sel = eg_rate_select[SLOT->d1r + SLOT->ksr];
 
 		SLOT->eg_pack_d1r = eg_inc_pack[eg_sel] | (eg_sh<<24);
 
-		eg_sh  = eg_rate_shift [SLOT->d2r + ksr];
-		eg_sel = eg_rate_select[SLOT->d2r + ksr];
+		eg_sh  = eg_rate_shift [SLOT->d2r + SLOT->ksr];
+		eg_sel = eg_rate_select[SLOT->d2r + SLOT->ksr];
 
 		SLOT->eg_pack_d2r = eg_inc_pack[eg_sel] | (eg_sh<<24);
 
-		eg_sh  = eg_rate_shift [SLOT->rr  + ksr];
-		eg_sel = eg_rate_select[SLOT->rr  + ksr];
+		eg_sh  = eg_rate_shift [SLOT->rr  + SLOT->ksr];
+		eg_sel = eg_rate_select[SLOT->rr  + SLOT->ksr];
 
 		SLOT->eg_pack_rr = eg_inc_pack[eg_sel] | (eg_sh<<24);
 	}
@@ -1259,17 +1252,6 @@ INLINE void refresh_fc_eg_chan(FM_CH *CH)
 		refresh_fc_eg_slot(&CH->SLOT[SLOT2] , fc , kc );
 		refresh_fc_eg_slot(&CH->SLOT[SLOT3] , fc , kc );
 		refresh_fc_eg_slot(&CH->SLOT[SLOT4] , fc , kc );
-	}
-}
-
-INLINE void refresh_fc_eg_chan_sl3(void)
-{
-	if( ym2612.CH[2].SLOT[SLOT1].Incr==-1)
-	{
-		refresh_fc_eg_slot(&ym2612.CH[2].SLOT[SLOT1], ym2612.OPN.SL3.fc[1], ym2612.OPN.SL3.kcode[1] );
-		refresh_fc_eg_slot(&ym2612.CH[2].SLOT[SLOT2], ym2612.OPN.SL3.fc[2], ym2612.OPN.SL3.kcode[2] );
-		refresh_fc_eg_slot(&ym2612.CH[2].SLOT[SLOT3], ym2612.OPN.SL3.fc[0], ym2612.OPN.SL3.kcode[0] );
-		refresh_fc_eg_slot(&ym2612.CH[2].SLOT[SLOT4], ym2612.CH[2].fc , ym2612.CH[2].kcode );
 	}
 }
 
@@ -1308,7 +1290,6 @@ static void reset_channels(FM_CH *CH)
 			CH[c].SLOT[s].state= EG_OFF;
 			CH[c].SLOT[s].volume = MAX_ATT_INDEX;
 		}
-		CH[c].mem_value = CH[c].op1_out = 0;
 	}
 	ym2612.slot_mask = 0;
 }
@@ -1443,6 +1424,7 @@ static void OPNSetPres(int pres)
 
 	ym2612.OPN.eg_timer_add  = (1<<EG_SH) * ym2612.OPN.ST.freqbase;
 
+
 	/* make time tables */
 	init_timetables( dt_tab );
 
@@ -1496,17 +1478,17 @@ static int OPNWriteReg(int r, int v)
 		set_ar_ksr(CH,SLOT,v);
 		break;
 
-	case 0x60:	/* bit7 = AM ENABLE, DR | depends on ksr */
+	case 0x60:	/* bit7 = AM ENABLE, DR */
 		set_dr(SLOT,v);
 		if(v&0x80) CH->AMmasks |=   1<<OPN_SLOT(r);
 		else       CH->AMmasks &= ~(1<<OPN_SLOT(r));
 		break;
 
-	case 0x70:	/*     SR | depends on ksr */
+	case 0x70:	/*     SR */
 		set_sr(SLOT,v);
 		break;
 
-	case 0x80:	/* SL, RR | depends on ksr */
+	case 0x80:	/* SL, RR */
 		set_sl_rr(SLOT,v);
 		break;
 
@@ -1517,10 +1499,10 @@ static int OPNWriteReg(int r, int v)
 
 	case 0xa0:
 		switch( OPN_SLOT(r) ){
-		case 0:		/* 0xa0-0xa2 : FNUM1 | depends on fn_h (below) */
+		case 0:		/* 0xa0-0xa2 : FNUM1 */
 			{
-				UINT32 fn = (((UINT32)( (CH->fn_h)&7))<<8) + v;
-				UINT8 blk = CH->fn_h>>3;
+				UINT32 fn = (((UINT32)( (ym2612.OPN.ST.fn_h)&7))<<8) + v;
+				UINT8 blk = ym2612.OPN.ST.fn_h>>3;
 				/* keyscale code */
 				CH->kcode = (blk<<2) | opn_fktable[fn >> 7];
 				/* phase increment counter */
@@ -1533,7 +1515,7 @@ static int OPNWriteReg(int r, int v)
 			}
 			break;
 		case 1:		/* 0xa4-0xa6 : FNUM2,BLK */
-			CH->fn_h = v&0x3f;
+			ym2612.OPN.ST.fn_h = v&0x3f;
 			ret = 0;
 			break;
 		case 2:		/* 0xa8-0xaa : 3CH FNUM1 */
@@ -1545,7 +1527,7 @@ static int OPNWriteReg(int r, int v)
 				ym2612.OPN.SL3.kcode[c]= (blk<<2) | opn_fktable[fn >> 7];
 				/* phase increment counter */
 				ym2612.OPN.SL3.fc[c] = fn_table[fn*2]>>(7-blk);
-				ym2612.OPN.SL3.block_fnum[c] = (blk<<11) | fn;
+				ym2612.OPN.SL3.block_fnum[c] = fn;
 				ym2612.CH[2].SLOT[SLOT1].Incr=-1;
 			}
 			break;
@@ -1602,6 +1584,11 @@ static int OPNWriteReg(int r, int v)
 /*      YM2612 local section                                                   */
 /*******************************************************************************/
 
+int   *ym2612_dacen;
+INT32 *ym2612_dacout;
+FM_ST *ym2612_st;
+
+
 /* Generate samples for YM2612 */
 int YM2612UpdateOne_(int *buffer, int length, int stereo, int is_buf_empty)
 {
@@ -1633,10 +1620,16 @@ int YM2612UpdateOne_(int *buffer, int length, int stereo, int is_buf_empty)
 	refresh_fc_eg_chan( &ym2612.CH[0] );
 	refresh_fc_eg_chan( &ym2612.CH[1] );
 	if( (ym2612.OPN.ST.mode & 0xc0) )
+	{
 		/* 3SLOT MODE */
-		refresh_fc_eg_chan_sl3();
-	else
-		refresh_fc_eg_chan( &ym2612.CH[2] );
+		if( ym2612.CH[2].SLOT[SLOT1].Incr==-1)
+		{
+			refresh_fc_eg_slot(&ym2612.CH[2].SLOT[SLOT1], ym2612.OPN.SL3.fc[1], ym2612.OPN.SL3.kcode[1] );
+			refresh_fc_eg_slot(&ym2612.CH[2].SLOT[SLOT2], ym2612.OPN.SL3.fc[2], ym2612.OPN.SL3.kcode[2] );
+			refresh_fc_eg_slot(&ym2612.CH[2].SLOT[SLOT3], ym2612.OPN.SL3.fc[0], ym2612.OPN.SL3.kcode[0] );
+			refresh_fc_eg_slot(&ym2612.CH[2].SLOT[SLOT4], ym2612.CH[2].fc , ym2612.CH[2].kcode );
+		}
+	} else refresh_fc_eg_chan( &ym2612.CH[2] );
 	refresh_fc_eg_chan( &ym2612.CH[3] );
 	refresh_fc_eg_chan( &ym2612.CH[4] );
 	refresh_fc_eg_chan( &ym2612.CH[5] );
@@ -1646,14 +1639,12 @@ int YM2612UpdateOne_(int *buffer, int length, int stereo, int is_buf_empty)
 
 	/* mix to 32bit dest */
 	// flags: stereo, ?, disabled, ?, pan_r, pan_l
-	chan_render_prep();
 	if (ym2612.slot_mask & 0x00000f) active_chs |= chan_render(buffer, length, 0, stereo|((pan&0x003)<<4)) << 0;
 	if (ym2612.slot_mask & 0x0000f0) active_chs |= chan_render(buffer, length, 1, stereo|((pan&0x00c)<<2)) << 1;
 	if (ym2612.slot_mask & 0x000f00) active_chs |= chan_render(buffer, length, 2, stereo|((pan&0x030)   )) << 2;
 	if (ym2612.slot_mask & 0x00f000) active_chs |= chan_render(buffer, length, 3, stereo|((pan&0x0c0)>>2)) << 3;
 	if (ym2612.slot_mask & 0x0f0000) active_chs |= chan_render(buffer, length, 4, stereo|((pan&0x300)>>4)) << 4;
 	if (ym2612.slot_mask & 0xf00000) active_chs |= chan_render(buffer, length, 5, stereo|((pan&0xc00)>>6)|(ym2612.dacen<<2)) << 5;
-	chan_render_finish();
 
 	return active_chs; // 1 if buffer updated
 }
@@ -1662,13 +1653,16 @@ int YM2612UpdateOne_(int *buffer, int length, int stereo, int is_buf_empty)
 /* initialize YM2612 emulator */
 void YM2612Init_(int clock, int rate)
 {
+	// notaz
+	ym2612_dacen = &ym2612.dacen;
+	ym2612_dacout = &ym2612.dacout;
+	ym2612_st = &ym2612.OPN.ST;
+
 	memset(&ym2612, 0, sizeof(ym2612));
 	init_tables();
 
 	ym2612.OPN.ST.clock = clock;
 	ym2612.OPN.ST.rate = rate;
-
-	OPNSetPres( 6*24 );
 
 	/* Extend handler */
 	YM2612ResetChip_();
@@ -1682,6 +1676,7 @@ void YM2612ResetChip_(void)
 
 	memset(ym2612.REGS, 0, sizeof(ym2612.REGS));
 
+	OPNSetPres( 6*24 );
 	set_timers( 0x30 ); /* mode 0 , timer reset */
 	ym2612.REGS[0x27] = 0x30;
 
@@ -1733,6 +1728,9 @@ int YM2612Write_(unsigned int a, unsigned int v)
 		}
 
 		addr = ym2612.OPN.ST.address;
+#ifndef EXTERNAL_YM2612
+		ym2612.REGS[addr] = v;
+#endif
 
 		switch( addr & 0xf0 )
 		{
@@ -1749,7 +1747,6 @@ int YM2612Write_(unsigned int a, unsigned int v)
 					ym2612.OPN.lfo_inc = 0;
 				}
 				break;
-#if 0 // handled elsewhere
 			case 0x24: { // timer A High 8
 					int TAnew = (ym2612.OPN.ST.TA & 0x03)|(((int)v)<<2);
 					if(ym2612.OPN.ST.TA != TAnew) {
@@ -1780,7 +1777,6 @@ int YM2612Write_(unsigned int a, unsigned int v)
 				}
 				ret=0;
 				break;
-#endif
 			case 0x27:	/* mode, timer control */
 				set_timers( v );
 				ret=0;
@@ -1830,11 +1826,19 @@ int YM2612Write_(unsigned int a, unsigned int v)
 		}
 
 		addr = ym2612.OPN.ST.address | 0x100;
+#ifndef EXTERNAL_YM2612
+		ym2612.REGS[addr] = v;
+#endif
 
 		ret = OPNWriteReg(addr, v);
 		break;
 	}
-
+/*
+	if(ret) {
+		extern int Scanline;
+		dprintf("ymw [%i]", Scanline);
+	}
+*/
 	return ret;
 }
 
@@ -1871,186 +1875,32 @@ int YM2612PicoTick_(int n)
 
 void YM2612PicoStateLoad_(void)
 {
+#ifndef EXTERNAL_YM2612
+	int i, real_A1 = ym2612.addr_A1;
+
 	reset_channels( &ym2612.CH[0] );
-	ym2612.slot_mask = 0xffffff;
+
+	// feed all the registers and update internal state
+	for(i = 0; i < 0x100; i++) {
+		YM2612Write_(0, i);
+		YM2612Write_(1, ym2612.REGS[i]);
+	}
+
+	for(i = 0; i < 0x100; i++) {
+		YM2612Write_(2, i);
+		YM2612Write_(3, ym2612.REGS[i|0x100]);
+	}
+
+	ym2612.addr_A1 = real_A1;
+#else
+	reset_channels( &ym2612.CH[0] );
+#endif
 }
 
-/* rather stupid design because I wanted to fit in unused register "space" */
-typedef struct
-{
-	UINT32  state_phase;
-	INT16   volume;
-} ym_save_addon_slot;
-
-typedef struct
-{
-	UINT32  magic;
-	UINT8   address;
-	UINT8   status;
-	UINT8   addr_A1;
-	UINT8   unused;
-	int     TAT;
-	int     TBT;
-	UINT32  eg_cnt;		// 10
-	UINT32  eg_timer;
-	UINT32  lfo_cnt;
-	UINT16  lfo_ampm;
-	UINT16  unused2;
-	UINT32  keyon_field;	// 20
-	UINT32  kcode_fc_sl3_3;
-	UINT32  reserved[2];
-} ym_save_addon;
-
-typedef struct
-{
-	UINT16  block_fnum[6];
-	UINT16  block_fnum_sl3[3];
-	UINT16  reserved[7];
-} ym_save_addon2;
-
-
-void YM2612PicoStateSave2(int tat, int tbt)
-{
-	ym_save_addon_slot ss;
-	ym_save_addon2 sa2;
-	ym_save_addon sa;
-	unsigned char *ptr;
-	int c, s;
-
-	memset(&sa, 0, sizeof(sa));
-	memset(&sa2, 0, sizeof(sa2));
-
-	// chans 1,2,3
-	ptr = &ym2612.REGS[0x0b8];
-	for (c = 0; c < 3; c++)
-	{
-		for (s = 0; s < 4; s++) {
-			ss.state_phase = (ym2612.CH[c].SLOT[s].state << 29) | (ym2612.CH[c].SLOT[s].phase >> 3);
-			ss.volume = ym2612.CH[c].SLOT[s].volume;
-			if (ym2612.CH[c].SLOT[s].key)
-				sa.keyon_field |= 1 << (c*4 + s);
-			memcpy(ptr, &ss, 6);
-			ptr += 6;
-		}
-		sa2.block_fnum[c] = ym2612.CH[c].block_fnum;
-	}
-	// chans 4,5,6
-	ptr = &ym2612.REGS[0x1b8];
-	for (; c < 6; c++)
-	{
-		for (s = 0; s < 4; s++) {
-			ss.state_phase = (ym2612.CH[c].SLOT[s].state << 29) | (ym2612.CH[c].SLOT[s].phase >> 3);
-			ss.volume = ym2612.CH[c].SLOT[s].volume;
-			if (ym2612.CH[c].SLOT[s].key)
-				sa.keyon_field |= 1 << (c*4 + s);
-			memcpy(ptr, &ss, 6);
-			ptr += 6;
-		}
-		sa2.block_fnum[c] = ym2612.CH[c].block_fnum;
-	}
-	for (c = 0; c < 3; c++)
-	{
-		sa2.block_fnum_sl3[c] = ym2612.OPN.SL3.block_fnum[c];
-	}
-
-	memcpy(&ym2612.REGS[0], &sa2, sizeof(sa2)); // 0x20 max
-
-	// other things
-	ptr = &ym2612.REGS[0x100];
-	sa.magic = 0x41534d59; // 'YMSA'
-	sa.address = ym2612.OPN.ST.address;
-	sa.status  = ym2612.OPN.ST.status;
-	sa.addr_A1 = ym2612.addr_A1;
-	sa.TAT     = tat;
-	sa.TBT     = tbt;
-	sa.eg_cnt  = ym2612.OPN.eg_cnt;
-	sa.eg_timer = ym2612.OPN.eg_timer;
-	sa.lfo_cnt  = ym2612.OPN.lfo_cnt;
-	sa.lfo_ampm = g_lfo_ampm;
-	memcpy(ptr, &sa, sizeof(sa)); // 0x30 max
-}
-
-int YM2612PicoStateLoad2(int *tat, int *tbt)
-{
-	ym_save_addon_slot ss;
-	ym_save_addon2 sa2;
-	ym_save_addon sa;
-	unsigned char *ptr;
-	UINT32 fn;
-	UINT8 blk;
-	int c, s;
-
-	ptr = &ym2612.REGS[0x100];
-	memcpy(&sa, ptr, sizeof(sa)); // 0x30 max
-	if (sa.magic != 0x41534d59) return -1;
-
-	ptr = &ym2612.REGS[0];
-	memcpy(&sa2, ptr, sizeof(sa2));
-
-	ym2612.OPN.ST.address = sa.address;
-	ym2612.OPN.ST.status = sa.status;
-	ym2612.addr_A1 = sa.addr_A1;
-	ym2612.OPN.eg_cnt = sa.eg_cnt;
-	ym2612.OPN.eg_timer = sa.eg_timer;
-	ym2612.OPN.lfo_cnt = sa.lfo_cnt;
-	g_lfo_ampm = sa.lfo_ampm;
-	if (tat != NULL) *tat = sa.TAT;
-	if (tbt != NULL) *tbt = sa.TBT;
-
-	// chans 1,2,3
-	ptr = &ym2612.REGS[0x0b8];
-	for (c = 0; c < 3; c++)
-	{
-		for (s = 0; s < 4; s++) {
-			memcpy(&ss, ptr, 6);
-			ym2612.CH[c].SLOT[s].state = ss.state_phase >> 29;
-			ym2612.CH[c].SLOT[s].phase = ss.state_phase << 3;
-			ym2612.CH[c].SLOT[s].volume = ss.volume;
-			ym2612.CH[c].SLOT[s].key = (sa.keyon_field & (1 << (c*4 + s))) ? 1 : 0;
-			ym2612.CH[c].SLOT[s].ksr = (UINT8)-1;
-			ptr += 6;
-		}
-		ym2612.CH[c].SLOT[SLOT1].Incr=-1;
-		ym2612.CH[c].block_fnum = sa2.block_fnum[c];
-		fn = ym2612.CH[c].block_fnum & 0x7ff;
-		blk = ym2612.CH[c].block_fnum >> 11;
-		ym2612.CH[c].kcode= (blk<<2) | opn_fktable[fn >> 7];
-		ym2612.CH[c].fc = fn_table[fn*2]>>(7-blk);
-	}
-	// chans 4,5,6
-	ptr = &ym2612.REGS[0x1b8];
-	for (; c < 6; c++)
-	{
-		for (s = 0; s < 4; s++) {
-			memcpy(&ss, ptr, 6);
-			ym2612.CH[c].SLOT[s].state = ss.state_phase >> 29;
-			ym2612.CH[c].SLOT[s].phase = ss.state_phase << 3;
-			ym2612.CH[c].SLOT[s].volume = ss.volume;
-			ym2612.CH[c].SLOT[s].key = (sa.keyon_field & (1 << (c*4 + s))) ? 1 : 0;
-			ym2612.CH[c].SLOT[s].ksr = (UINT8)-1;
-			ptr += 6;
-		}
-		ym2612.CH[c].SLOT[SLOT1].Incr=-1;
-		ym2612.CH[c].block_fnum = sa2.block_fnum[c];
-		fn = ym2612.CH[c].block_fnum & 0x7ff;
-		blk = ym2612.CH[c].block_fnum >> 11;
-		ym2612.CH[c].kcode= (blk<<2) | opn_fktable[fn >> 7];
-		ym2612.CH[c].fc = fn_table[fn*2]>>(7-blk);
-	}
-	for (c = 0; c < 3; c++)
-	{
-		ym2612.OPN.SL3.block_fnum[c] = sa2.block_fnum_sl3[c];
-		fn = ym2612.OPN.SL3.block_fnum[c] & 0x7ff;
-		blk = ym2612.OPN.SL3.block_fnum[c] >> 11;
-		ym2612.OPN.SL3.kcode[c]= (blk<<2) | opn_fktable[fn >> 7];
-		ym2612.OPN.SL3.fc[c] = fn_table[fn*2]>>(7-blk);
-	}
-
-	return 0;
-}
-
+#ifndef EXTERNAL_YM2612
 void *YM2612GetRegs(void)
 {
 	return ym2612.REGS;
 }
+#endif
 

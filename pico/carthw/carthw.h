@@ -12,16 +12,11 @@ extern svp_t *svp;
 
 void PicoSVPInit(void);
 void PicoSVPStartup(void);
-void PicoSVPMemSetup(void);
+
+unsigned int PicoSVPRead16(unsigned int a, int realsize);
+void PicoSVPWrite8 (unsigned int a, unsigned int d, int realsize);
+void PicoSVPWrite16(unsigned int a, unsigned int d, int realsize);
 
 /* misc */
-void carthw_ssf2_startup(void);
-void carthw_Xin1_startup(void);
+void carthw_12in1_startup(void);
 void carthw_realtec_startup(void);
-void carthw_radica_startup(void);
-
-void carthw_sprot_startup(void);
-void carthw_sprot_new_location(unsigned int a,
-	unsigned int mask, unsigned short val, int is_ro);
-
-void carthw_prot_lk3_startup(void);

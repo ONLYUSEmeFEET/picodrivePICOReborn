@@ -1,14 +1,14 @@
-// (c) Copyright 2006-2009 notaz, All rights reserved.
+// (c) Copyright 2006 notaz, All rights reserved.
 // Free for non-commercial use.
 
 // For commercial use, separate licencing terms must be obtained.
 
-void bgr444_to_rgb32(void *to, void *from);
-void bgr444_to_rgb32_sh(void *to, void *from);
-
-void vidcpy_m2(void *dest, void *src, int m32col, int with_32c_border);
-void vidcpy_m2_rot(void *dest, void *src, int m32col, int with_32c_border);
+void vidConvCpyRGB32  (void *to, void *from, int pixels);
+void vidConvCpyRGB32sh(void *to, void *from, int pixels);
+void vidConvCpyRGB32hi(void *to, void *from, int pixels);
+void vidCpyM2_40col(void *dest, void *src);
+void vidCpyM2_32col(void *dest, void *src);
+void vidCpyM2_32col_nobord(void *dest, void *src);
 void spend_cycles(int c); // utility
+void flushcache(void *beginning_addr, void *end_addr, unsigned int flags);
 
-void rotated_blit8 (void *dst, void *linesx4, int y, int is_32col);
-void rotated_blit16(void *dst, void *linesx4, int y, int is_32col);

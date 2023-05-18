@@ -1,10 +1,7 @@
-@ vim:filetype=armasm
 @ some color conversion and blitting routines
 
 @ (c) Copyright 2006, notaz
 @ All Rights Reserved
-
-.include "port_config.s"
 
 
 @ Convert 0000bbb0 ggg0rrr0 0000bbb0 ggg0rrr0
@@ -344,13 +341,13 @@ vidConvCpy_90:
     mov     r6,  #0
     stmia   r0!, {r3-r6}
     stmia   r0!, {r3-r6}
-    add     r7,  r0, #(240+BORDER_R)*4-8*4
+    add     r7,  r0, #256*4-8*4
     stmia   r7!, {r3-r6}
     stmia   r7!, {r3-r6}
-    add     r7,  r7, #(240+BORDER_R)*4-8*4
+    add     r7,  r7, #256*4-8*4
     stmia   r7!, {r3-r6}
     stmia   r7!, {r3-r6}
-    add     r7,  r7, #(240+BORDER_R)*4-8*4
+    add     r7,  r7, #256*4-8*4
     stmia   r7!, {r3-r6}
     stmia   r7!, {r3-r6}
 
@@ -375,7 +372,7 @@ vidConvCpy_90:
     mode2_4pix  0
 .endif
     stmia   r0, {r7,r8,r10,lr}
-    add     r0, r0, #(240+BORDER_R)*4
+    add     r0, r0, #256*4
 
 .if \is270
     mode2_4pix 16
@@ -383,7 +380,7 @@ vidConvCpy_90:
     mode2_4pix  8
 .endif
     stmia   r0, {r7,r8,r10,lr}
-    add     r0, r0, #(240+BORDER_R)*4
+    add     r0, r0, #256*4
 
 .if \is270
     mode2_4pix  8
@@ -391,7 +388,7 @@ vidConvCpy_90:
     mode2_4pix 16
 .endif
     stmia   r0, {r7,r8,r10,lr}
-    add     r0, r0, #(240+BORDER_R)*4
+    add     r0, r0, #256*4
 
 .if \is270
     mode2_4pix  0
@@ -399,7 +396,7 @@ vidConvCpy_90:
     mode2_4pix 24
 .endif
     stmia   r0!,{r7,r8,r10,lr}
-    sub     r0, r0, #(240+BORDER_R)*4*3
+    sub     r0, r0, #256*4*3
 
     bpl     0b @ .loopM2RGB32_270
 
@@ -409,13 +406,13 @@ vidConvCpy_90:
     mov     r6,  #0
     stmia   r0!, {r3-r6}
     stmia   r0!, {r3-r6}
-    add     r0,  r0, #(240+BORDER_R)*4-8*4
+    add     r0,  r0, #256*4-8*4
     stmia   r0!, {r3-r6}
     stmia   r0!, {r3-r6}
-    add     r0,  r0, #(240+BORDER_R)*4-8*4
+    add     r0,  r0, #256*4-8*4
     stmia   r0!, {r3-r6}
     stmia   r0!, {r3-r6}
-    add     r0,  r0, #(240+BORDER_R)*4-8*4
+    add     r0,  r0, #256*4-8*4
     stmia   r0!, {r3-r6}
     nop                             @ phone crashes if this is commented out. Do I stress it too much?
     stmia   r0!, {r3-r6}
@@ -424,9 +421,7 @@ vidConvCpy_90:
     subs    r12, r12, #1
     ldmeqfd sp!, {r4-r11,pc}        @ return
 
-.if BORDER_R
-    add     r0,  r0, #BORDER_R*4
-.endif
+    add     r0,  r0, #16*4
 .if \is270
     sub     r9,  r9, #4            @ fix src pointer
 .else
@@ -436,13 +431,13 @@ vidConvCpy_90:
 
     stmia   r0!, {r3-r6}            @ top border
     stmia   r0!, {r3-r6}
-    add     r7,  r0, #(240+BORDER_R)*4-8*4
+    add     r7,  r0, #256*4-8*4
     stmia   r7!, {r3-r6}
     stmia   r7!, {r3-r6}
-    add     r7,  r7, #(240+BORDER_R)*4-8*4
+    add     r7,  r7, #256*4-8*4
     stmia   r7!, {r3-r6}
     stmia   r7!, {r3-r6}
-    add     r7,  r7, #(240+BORDER_R)*4-8*4
+    add     r7,  r7, #256*4-8*4
     stmia   r7!, {r3-r6}
     stmia   r7!, {r3-r6}
 
@@ -485,9 +480,7 @@ vidConvCpy_center_0:
 	sub     r12, r12, #1
 	adds    r12, r12, #1<<16
     ldmeqfd sp!, {r4-r6,r11,pc} @ return
-.if BORDER_R
-    add     r0,  r0, #BORDER_R*4
-.endif
+    add     r0,  r0, #16*4
     add     r1,  r1, #88
     orr     r12, #(240/4-1)<<16
     b       .loopRGB32_c0
@@ -516,9 +509,7 @@ vidConvCpy_center_180:
 	sub     r12, r12, #1
 	adds    r12, r12, #1<<16
     ldmeqfd sp!, {r4-r6,r11,pc} @ return
-.if BORDER_R
-    add     r0,  r0, #BORDER_R*4
-.endif
+    add     r0,  r0, #16*4
     sub     r1,  r1, #88
     orr     r12, #(240/4-1)<<16
     b       .loopRGB32_c180
@@ -552,9 +543,7 @@ vidConvCpy_center2_40c_0:
 	sub     r12, r12, #1
 	adds    r12, r12, #1<<16
     ldmeqfd sp!, {r4-r6,r10,r11,pc} @ return
-.if BORDER_R
-    add     r0,  r0, #BORDER_R*4
-.endif
+    add     r0,  r0, #16*4
     add     r1,  r1, #8
     orr     r12, #(240/3-1)<<16
     b       .loopRGB32_c2_40c_0
@@ -590,9 +579,7 @@ vidConvCpy_center2_40c_180:
 	sub     r12, r12, #1
 	adds    r12, r12, #1<<16
     ldmeqfd sp!, {r4-r6,r10,r11,pc} @ return
-.if BORDER_R
-    add     r0,  r0, #BORDER_R*4
-.endif
+    add     r0,  r0, #16*4
     sub     r1,  r1, #8
     orr     r12, #(240/3-1)<<16
     b       .loop_c2_40c_180
@@ -629,9 +616,7 @@ vidConvCpy_center2_32c_0:
 	sub     r12, r12, #1
 	adds    r12, r12, #1<<16
     ldmeqfd sp!, {r4-r11,pc} @ return
-.if BORDER_R
-    add     r0,  r0, #BORDER_R*4
-.endif
+    add     r0,  r0, #16*4
     add     r1,  r1, #64+8
     orr     r12, #(240/15-1)<<16
     b       .loop_c2_32c_0
@@ -672,9 +657,7 @@ vidConvCpy_center2_32c_180:
 	sub     r12, r12, #1
 	adds    r12, r12, #1<<16
     ldmeqfd sp!, {r4-r11,pc} @ return
-.if BORDER_R
-    add     r0,  r0, #BORDER_R*4
-.endif
+    add     r0,  r0, #16*4
     sub     r1,  r1, #64+8
     orr     r12, #(240/15-1)<<16
     b       .loop_c2_32c_180
@@ -706,19 +689,7 @@ vidClear:
 	sub     r12, r12, #1
 	adds    r12, r12, #1<<16
     ldmeqfd sp!, {pc}        @ return
-.if BORDER_R
-    add     r0,  r0, #BORDER_R*4
-.endif
+    add     r0,  r0, #16*4
     orr     r12, #(240/16-1)<<16
     b       .loopVidClear
-
-@ @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
-
-.equ EExecSetExceptionHandler, (90)
-
-.global my_SetExceptionHandler
-
-my_SetExceptionHandler:
-    mov     ip, lr
-    swi     EExecSetExceptionHandler
 

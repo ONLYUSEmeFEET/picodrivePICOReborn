@@ -1,7 +1,7 @@
 // Buffering handling
 // (c) Copyright 2007, Grazvydas "notaz" Ignotas
 
-#include "../pico_int.h"
+#include "../PicoInt.h"
 
 int PicoCDBuffers = 0;
 static unsigned char *cd_buffer = NULL;
@@ -12,7 +12,7 @@ static int hits, reads;
 
 void PicoCDBufferInit(void)
 {
-	void *tmp = NULL;
+	void *tmp;
 
 	prev_lba = 0x80000000;
 	hits = reads = 0;

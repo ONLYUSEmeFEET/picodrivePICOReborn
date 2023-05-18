@@ -7,7 +7,7 @@
 // For commercial use, separate licencing terms must be obtained.
 
 
-#include "pico_int.h"
+#include "PicoInt.h"
 
 
 int SekCycleCnt=0; // cycles done in this frame
@@ -96,7 +96,7 @@ static void SekIntAckF68K(unsigned level)
 #endif
 
 
-PICO_INTERNAL void SekInit(void)
+PICO_INTERNAL int SekInit()
 {
 #ifdef EMU_C68K
   CycloneInit();
@@ -129,16 +129,24 @@ PICO_INTERNAL void SekInit(void)
     g_m68kcontext = oldcontext;
   }
 #endif
+
+  return 0;
 }
 
 
 // Reset the 68000:
-PICO_INTERNAL int SekReset(void)
+PICO_INTERNAL int SekReset()
 {
   if (Pico.rom==NULL) return 1;
 
 #ifdef EMU_C68K
-  CycloneReset(&PicoCpuCM68k);
+  PicoCpuCM68k.state_flags=0;
+  PicoCpuCM68k.osp=0;
+  PicoCpuCM68k.srh =0x27; // Supervisor mode
+  PicoCpuCM68k.irq=0;
+  PicoCpuCM68k.a[7]=PicoCpuCM68k.read32(0); // Stack Pointer
+  PicoCpuCM68k.membase=0;
+  PicoCpuCM68k.pc=PicoCpuCM68k.checkpc(PicoCpuCM68k.read32(4)); // Program Counter
 #endif
 #ifdef EMU_M68K
   m68k_set_context(&PicoCpuMM68k); // if we ever reset m68k, we always need it's context to be set
@@ -157,19 +165,21 @@ PICO_INTERNAL int SekReset(void)
   return 0;
 }
 
-void SekStepM68k(void)
+
+// data must be word aligned
+PICO_INTERNAL void SekState(int *data)
 {
-  SekCycleAim=SekCycleCnt+1;
-#if defined(EMU_CORE_DEBUG)
-  SekCycleCnt+=CM_compareRun(1, 0);
-#elif defined(EMU_C68K)
-  PicoCpuCM68k.cycles=1;
-  CycloneRun(&PicoCpuCM68k);
-  SekCycleCnt+=1-PicoCpuCM68k.cycles;
+#ifdef EMU_C68K
+  memcpy32(data,(int *)PicoCpuCM68k.d,0x44/4);
+  data[0x11] = PicoCpuCM68k.flags;
 #elif defined(EMU_M68K)
-  SekCycleCnt+=m68k_execute(1);
+  memcpy32(data, (int *)PicoCpuMM68k.dar, 0x40/4);
+  data[0x10] = PicoCpuMM68k.pc;
+  data[0x11] = m68k_get_reg(&PicoCpuMM68k, M68K_REG_SR);
 #elif defined(EMU_F68K)
-  SekCycleCnt+=fm68k_emulate(1, 0, 0);
+  memcpy32(data, (int *)PicoCpuFM68k.dreg, 0x40/4);
+  data[0x10] = PicoCpuFM68k.pc;
+  data[0x11] = PicoCpuFM68k.sr;
 #endif
 }
 
@@ -182,158 +192,6 @@ PICO_INTERNAL void SekSetRealTAS(int use_real)
   // TODO
 #endif
 }
-
-
-/* idle loop detection, not to be used in CD mode */
-#ifdef EMU_C68K
-#include "cpu/Cyclone/tools/idle.h"
-#endif
-
-static int *idledet_addrs = NULL;
-static int idledet_count = 0, idledet_bads = 0;
-int idledet_start_frame = 0;
-
-#if 0
-#define IDLE_STATS 1
-unsigned int idlehit_addrs[128], idlehit_counts[128];
-
-void SekRegisterIdleHit(unsigned int pc)
-{
-  int i;
-  for (i = 0; i < 127 && idlehit_addrs[i]; i++) {
-    if (idlehit_addrs[i] == pc) {
-      idlehit_counts[i]++;
-      return;
-    }
-  }
-  idlehit_addrs[i] = pc;
-  idlehit_counts[i] = 1;
-  idlehit_addrs[i+1] = 0;
-}
-#endif
-
-void SekInitIdleDet(void)
-{
-  void *tmp = realloc(idledet_addrs, 0x200*4);
-  if (tmp == NULL) {
-    free(idledet_addrs);
-    idledet_addrs = NULL;
-  }
-  else
-    idledet_addrs = tmp;
-  idledet_count = idledet_bads = 0;
-  idledet_start_frame = Pico.m.frame_count + 360;
-#ifdef IDLE_STATS
-  idlehit_addrs[0] = 0;
-#endif
-
-#ifdef EMU_C68K
-  CycloneInitIdle();
-#endif
-#ifdef EMU_F68K
-  fm68k_emulate(0, 0, 1);
-#endif
-}
-
-int SekIsIdleCode(unsigned short *dst, int bytes)
-{
-  // printf("SekIsIdleCode %04x %i\n", *dst, bytes);
-  switch (bytes)
-  {
-    case 2:
-      if ((*dst & 0xf000) != 0x6000)     // not another branch
-        return 1;
-      break;
-    case 4:
-      if (  (*dst & 0xfff8) == 0x4a10 || // tst.b ($aX)      // there should be no need to wait
-            (*dst & 0xfff8) == 0x4a28 || // tst.b ($xxxx,a0) // for byte change anywhere
-            (*dst & 0xff3f) == 0x4a38 || // tst.x ($xxxx.w); tas ($xxxx.w)
-            (*dst & 0xc1ff) == 0x0038 || // move.x ($xxxx.w), dX
-            (*dst & 0xf13f) == 0xb038)   // cmp.x ($xxxx.w), dX
-        return 1;
-      break;
-    case 6:
-      if ( ((dst[1] & 0xe0) == 0xe0 && ( // RAM and
-            *dst == 0x4a39 ||            //   tst.b ($xxxxxxxx)
-            *dst == 0x4a79 ||            //   tst.w ($xxxxxxxx)
-            *dst == 0x4ab9 ||            //   tst.l ($xxxxxxxx)
-            (*dst & 0xc1ff) == 0x0039 || //   move.x ($xxxxxxxx), dX
-            (*dst & 0xf13f) == 0xb039))||//   cmp.x ($xxxxxxxx), dX
-            *dst == 0x0838 ||            // btst $X, ($xxxx.w) [6 byte op]
-            (*dst & 0xffbf) == 0x0c38)   // cmpi.{b,w} $X, ($xxxx.w)
-        return 1;
-      break;
-    case 8:
-      if ( ((dst[2] & 0xe0) == 0xe0 && ( // RAM and
-            *dst == 0x0839 ||            //   btst $X, ($xxxxxxxx.w) [8 byte op]
-            (*dst & 0xffbf) == 0x0c39))||//   cmpi.{b,w} $X, ($xxxxxxxx)
-            *dst == 0x0cb8)              // cmpi.l $X, ($xxxx.w)
-        return 1;
-      break;
-    case 12:
-       if ((*dst & 0xf1f8) == 0x3010 && // move.w (aX), dX
-            (dst[1]&0xf100) == 0x0000 && // arithmetic
-            (dst[3]&0xf100) == 0x0000)   // arithmetic
-        return 1;
-      break;
-  }
-
-  return 0;
-}
-
-int SekRegisterIdlePatch(unsigned int pc, int oldop, int newop, void *ctx)
-{
-  int is_main68k = 1;
-#if   defined(EMU_C68K)
-  struct Cyclone *cyc = ctx;
-  is_main68k = cyc == &PicoCpuCM68k;
-  pc -= cyc->membase;
-#elif defined(EMU_F68K)
-  is_main68k = ctx == &PicoCpuFM68k;
-#endif
-  pc &= ~0xff000000;
-  elprintf(EL_IDLE, "idle: patch %06x %04x %04x %c %c #%i", pc, oldop, newop,
-    (newop&0x200)?'n':'y', is_main68k?'m':'s', idledet_count);
-
-  if (pc > Pico.romsize && !(PicoAHW & PAHW_SVP)) {
-    if (++idledet_bads > 128) return 2; // remove detector
-    return 1; // don't patch
-  }
-
-  if (idledet_count >= 0x200 && (idledet_count & 0x1ff) == 0) {
-    void *tmp = realloc(idledet_addrs, (idledet_count+0x200)*4);
-    if (tmp == NULL) return 1;
-    idledet_addrs = tmp;
-  }
-
-  if (pc < Pico.romsize)
-    idledet_addrs[idledet_count++] = pc;
-
-  return 0;
-}
-
-void SekFinishIdleDet(void)
-{
-#ifdef EMU_C68K
-  CycloneFinishIdle();
-#endif
-#ifdef EMU_F68K
-  fm68k_emulate(0, 0, 2);
-#endif
-  while (idledet_count > 0)
-  {
-    unsigned short *op = (unsigned short *)&Pico.rom[idledet_addrs[--idledet_count]];
-    if      ((*op & 0xfd00) == 0x7100)
-      *op &= 0xff, *op |= 0x6600;
-    else if ((*op & 0xfd00) == 0x7500)
-      *op &= 0xff, *op |= 0x6700;
-    else if ((*op & 0xfd00) == 0x7d00)
-      *op &= 0xff, *op |= 0x6000;
-    else
-      elprintf(EL_STATUS|EL_IDLE, "idle: don't know how to restore %04x", *op);
-  }
-}
-
 
 #if defined(EMU_M68K) && M68K_INSTRUCTION_HOOK == OPT_SPECIFY_HANDLER
 static unsigned char op_flags[0x400000/2] = { 0, };

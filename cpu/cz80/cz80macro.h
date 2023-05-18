@@ -73,11 +73,8 @@
 #define WRITE_MEM8(A, D) { \
 	unsigned short a = A; \
 	unsigned char d = D; \
-	unsigned long v = z80_write_map[a >> Z80_MEM_SHIFT]; \
-	if (v & 0x80000000) \
-		((z80_write_f *)(v << 1))(a, d); \
-	else \
-		*(unsigned char *)((v << 1) + a) = d; \
+	if (a < 0x4000) Pico.zram[a&0x1fff] = d; \
+	else z80_write(a, d); \
 }
 #else
 #define WRITE_MEM8(A, D)	CPU->Write_Byte(A, D);

@@ -9,7 +9,7 @@
 // this is a frame-based renderer, alternative to Dave's line based which is in Draw.c
 
 
-#include "pico_int.h"
+#include "PicoInt.h"
 
 // port_config.h include must define these 2 defines:
 // #define START_ROW  1 // which row of tiles to start rendering at?
@@ -26,6 +26,8 @@
 #else
 #define LINE_WIDTH 328
 #endif
+
+int currpri = 0;
 
 static int HighCache2A[41*(TILE_ROWS+1)+1+1]; // caches for high layers
 static int HighCache2B[41*(TILE_ROWS+1)+1+1];
@@ -282,8 +284,12 @@ static void DrawLayerFull(int plane, int *hcache, int planestart, int planeend)
 			code=Pico.vram[nametab_row+(tilex&xmask)];
 			if (code==blank) continue;
 
+#ifdef USE_CACHE
 			if (code>>15) { // high priority tile
 				*hcache++ = code|(dx<<16)|(trow<<27); // cache it
+#else
+			if ((code>>15) != currpri) {
+#endif
 				continue;
 			}
 
@@ -491,7 +497,7 @@ static void BackFillFull(int reg7)
 }
 #endif
 
-static void DrawDisplayFull(void)
+static void DrawDisplayFull()
 {
 	struct PicoVideo *pvid=&Pico.video;
 	int win, edge=0, hvwin=0; // LSb->MSb: hwin&plane, vwin&plane, full
@@ -506,8 +512,7 @@ static void DrawDisplayFull(void)
 	}
 
 	// horizontal window?
-	if ((win=pvid->reg[0x12]))
-	{
+	if((win=pvid->reg[0x12])) {
 		hvwin=1; // hwindow shares display with plane A
 		edge=win&0x1f;
 		if(win == 0x80) {
@@ -526,8 +531,7 @@ static void DrawDisplayFull(void)
 	}
 
 	// check for vertical window, but only if win is not fullscreen
-	if (hvwin != 4)
-	{
+	if(hvwin != 4) {
 		win=pvid->reg[0x11];
 		edge=win&0x1f;
 		if (win&0x80) {
@@ -551,16 +555,15 @@ static void DrawDisplayFull(void)
 		}
 	}
 
-	if (hvwin==1) { winend|=maxcolc<<16; planeend|=maxcolc<<16; }
+	if(hvwin==1) { winend|=maxcolc<<16; planeend|=maxcolc<<16; }
 
-	HighCache2A[1] = HighCache2B[1] = 0;
-	if (PicoDrawMask & PDRAW_LAYERB_ON)
-		DrawLayerFull(1, HighCache2B, START_ROW, (maxcolc<<16)|END_ROW);
-	if (PicoDrawMask & PDRAW_LAYERA_ON) switch (hvwin)
-	{
+	currpri = 0;
+	DrawLayerFull(1, HighCache2B, START_ROW, (maxcolc<<16)|END_ROW);
+	switch(hvwin) {
 		case 4:
 		// fullscreen window
 		DrawWindowFull(START_ROW, (maxcolc<<16)|END_ROW, 0);
+		HighCache2A[1] = 0;
 		break;
 
 		case 3:
@@ -582,13 +585,12 @@ static void DrawDisplayFull(void)
 		DrawLayerFull(0, HighCache2A, START_ROW, (maxcolc<<16)|END_ROW);
 		break;
 	}
-	if (PicoDrawMask & PDRAW_SPRITES_LOW_ON)
-		DrawAllSpritesFull(0, maxw);
+	DrawAllSpritesFull(0, maxw);
 
-	if (HighCache2B[1]) DrawTilesFromCacheF(HighCache2B);
-	if (HighCache2A[1]) DrawTilesFromCacheF(HighCache2A);
-	if (PicoDrawMask & PDRAW_LAYERA_ON) switch (hvwin)
-	{
+#ifdef USE_CACHE
+	if(HighCache2B[1]) DrawTilesFromCacheF(HighCache2B);
+	if(HighCache2A[1]) DrawTilesFromCacheF(HighCache2A);
+	switch(hvwin) {
 		case 4:
 		// fullscreen window
 		DrawWindowFull(START_ROW, (maxcolc<<16)|END_ROW, 1);
@@ -606,15 +608,18 @@ static void DrawDisplayFull(void)
 		DrawWindowFull(winstart, winend, 1);
 		break;
 	}
-	if (PicoDrawMask & PDRAW_SPRITES_HI_ON)
-		DrawAllSpritesFull(1, maxw);
+#else
+	currpri = 1;
+	// TODO
+#endif
+	DrawAllSpritesFull(1, maxw);
 }
 
 
 PICO_INTERNAL void PicoFrameFull()
 {
 	// prepare cram?
-	if (PicoPrepareCram) PicoPrepareCram();
+	if(PicoPrepareCram) PicoPrepareCram();
 
 	// Draw screen:
 	BackFillFull(Pico.video.reg[7]);

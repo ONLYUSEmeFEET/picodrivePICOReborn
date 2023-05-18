@@ -10,8 +10,8 @@
 #include "mp3.h"
 #include "../common/menu.h"
 #include "../common/emu.h"
-#include "../common/config.h"
 #include "../common/lprintf.h"
+#include "version.h"
 
 #ifdef GPROF
 #include <pspprof.h>
@@ -23,7 +23,7 @@
 
 void dummy(void)
 {
-	engineState = atoi(rom_fname_reload);
+	engineState = atoi(romFileName);
 	setbuf(NULL, NULL);
 	getenv(NULL);
 }
@@ -31,6 +31,7 @@ void dummy(void)
 
 int pico_main(void)
 {
+	lprintf("\nPicoDrive v" VERSION " " __DATE__ " " __TIME__ "\n");
 	psp_init();
 
 	emu_prepareDefaultConfig();
@@ -52,13 +53,13 @@ int pico_main(void)
 #ifndef GPROF
 				menu_loop();
 #else
-				strcpy(rom_fname_reload, rom_fname_loaded);
+				strcpy(romFileName, lastRomFile);
 				engineState = PGS_ReloadRom;
 #endif
 				break;
 
 			case PGS_ReloadRom:
-				if (emu_reload_rom(rom_fname_reload)) {
+				if (emu_ReloadRom()) {
 					engineState = PGS_Running;
 					if (mp3_last_error != 0)
 						engineState = PGS_Menu; // send to menu to display mp3 error
@@ -73,24 +74,15 @@ int pico_main(void)
 					psp_wait_suspend();
 				break;
 
-			case PGS_SuspendWake:
-				psp_unhandled_suspend = 0;
-				psp_resume_suspend();
-				emu_HandleResume();
-				engineState = engineStateSuspend;
-				break;
-
 			case PGS_RestartRun:
 				engineState = PGS_Running;
 
 			case PGS_Running:
 				if (psp_unhandled_suspend) {
-					psp_unhandled_suspend = 0;
 					psp_resume_suspend();
 					emu_HandleResume();
-					break;
 				}
-				pemu_loop();
+				emu_Loop();
 #ifdef GPROF
 				goto endloop;
 #endif

@@ -1,4 +1,4 @@
-#include "../pico_int.h"
+#include "../PicoInt.h"
 
 // x: 0x03c - 0x19d
 // y: 0x1fc - 0x2f7
@@ -21,9 +21,9 @@ PICO_INTERNAL void PicoReratePico(void)
   PicoPicoPCMRerate(rate);
 }
 
-static void PicoLinePico(void)
+static void PicoLinePico(int count)
 {
-  PicoPicohw.line_counter++;
+  PicoPicohw.line_counter += count;
 
 #if 1
   if ((PicoPicohw.r12 & 0x4003) && PicoPicohw.line_counter - prev_line_cnt_irq3 > 200) {
@@ -37,7 +37,7 @@ static void PicoLinePico(void)
 
   if (PicoPicohw.fifo_bytes > 0)
   {
-    PicoPicohw.fifo_line_bytes += fifo_bytes_line;
+    PicoPicohw.fifo_line_bytes += fifo_bytes_line * count;
     if (PicoPicohw.fifo_line_bytes >= (1<<16)) {
       PicoPicohw.fifo_bytes -= PicoPicohw.fifo_line_bytes >> 16;
       PicoPicohw.fifo_line_bytes &= 0xffff;
@@ -73,9 +73,9 @@ static void PicoResetPico(void)
   PicoPicohw.xpcm_ptr = PicoPicohw.xpcm_buffer;
 }
 
-PICO_INTERNAL void PicoInitPico(void)
+PICO_INTERNAL int PicoInitPico(void)
 {
-  elprintf(EL_STATUS, "Pico startup");
+  elprintf(EL_STATUS, "Pico detected");
   PicoLineHook = PicoLinePico;
   PicoResetHook = PicoResetPico;
 
@@ -93,5 +93,7 @@ PICO_INTERNAL void PicoInitPico(void)
     case 2: PicoPicohw.r1 = 0x40; break;
     case 3: PicoPicohw.r1 = 0x20; break;
   }
+
+  return 0;
 }
 

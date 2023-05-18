@@ -1,25 +1,51 @@
 // (c) Copyright 2007 notaz, All rights reserved.
 
 
-#include "../pico_int.h"
-#include "../sound/ym2612.h"
+#include "../PicoInt.h"
+
 
 extern unsigned char formatted_bram[4*0x10];
 extern unsigned int s68k_poll_adclk;
 
 void (*PicoMCDopenTray)(void) = NULL;
-void (*PicoMCDcloseTray)(void) = NULL;
+int  (*PicoMCDcloseTray)(void) = NULL;
+
+#define dump_ram(ram,fname) \
+{ \
+  int i, d; \
+  FILE *f; \
+\
+  for (i = 0; i < sizeof(ram); i+=2) { \
+    d = (ram[i]<<8) | ram[i+1]; \
+    *(unsigned short *)(ram+i) = d; \
+  } \
+  f = fopen(fname, "wb"); \
+  if (f) { \
+    fwrite(ram, 1, sizeof(ram), f); \
+    fclose(f); \
+  } \
+  for (i = 0; i < sizeof(ram); i+=2) { \
+    d = (ram[i]<<8) | ram[i+1]; \
+    *(unsigned short *)(ram+i) = d; \
+  } \
+}
 
 
-PICO_INTERNAL void PicoInitMCD(void)
+PICO_INTERNAL int PicoInitMCD(void)
 {
   SekInitS68k();
   Init_CD_Driver();
+
+  return 0;
 }
+
 
 PICO_INTERNAL void PicoExitMCD(void)
 {
   End_CD_Driver();
+
+  //dump_ram(Pico_mcd->prg_ram, "prg.bin");
+  //dump_ram(Pico.ram, "ram.bin");
 }
 
 PICO_INTERNAL void PicoPowerMCD(void)
@@ -45,12 +71,13 @@ PICO_INTERNAL int PicoResetMCD(void)
   Reset_CD();
   LC89510_Reset();
   gfx_cd_reset();
+  PicoMemResetCD(1);
 #ifdef _ASM_CD_MEMORY_C
   //PicoMemResetCDdecode(1); // don't have to call this in 2M mode
 #endif
 
   // use SRam.data for RAM cart
-  if (PicoOpt & POPT_EN_MCD_RAMCART) {
+  if (PicoOpt&POPT_EN_MCD_RAMCART) {
     if (SRam.data == NULL)
       SRam.data = calloc(1, 0x12000);
   }
@@ -79,7 +106,7 @@ static __inline void SekRunM68k(int cyc)
   SekCycleCnt+=m68k_execute(cyc_do);
 #elif defined(EMU_F68K)
   g_m68kcontext=&PicoCpuFM68k;
-  SekCycleCnt+=fm68k_emulate(cyc_do, 0, 0);
+  SekCycleCnt+=fm68k_emulate(cyc_do, 0);
 #endif
 }
 
@@ -99,7 +126,7 @@ static __inline void SekRunS68k(int cyc)
   SekCycleCntS68k+=m68k_execute(cyc_do);
 #elif defined(EMU_F68K)
   g_m68kcontext=&PicoCpuFS68k;
-  SekCycleCntS68k+=fm68k_emulate(cyc_do, 0, 0);
+  SekCycleCntS68k+=fm68k_emulate(cyc_do, 0);
 #endif
 }
 
@@ -113,7 +140,7 @@ static __inline void SekRunPS(int cyc_m68k, int cyc_s68k)
 {
   SekCycleAim+=cyc_m68k;
   SekCycleAimS68k+=cyc_s68k;
-  fm68k_emulate(0, 1, 0);
+  fm68k_emulate(0, 1);
 }
 #else
 static __inline void SekRunPS(int cyc_m68k, int cyc_s68k)
@@ -139,7 +166,7 @@ static __inline void SekRunPS(int cyc_m68k, int cyc_s68k)
       SekCycleCnt += m68k_execute(cyc_do);
 #elif defined(EMU_F68K)
       g_m68kcontext = &PicoCpuFM68k;
-      SekCycleCnt += fm68k_emulate(cyc_do, 0, 0);
+      SekCycleCnt += fm68k_emulate(cyc_do, 0);
 #endif
     }
     if ((cyc_do = SekCycleAimS68k-SekCycleCntS68k-cycn_s68k) > 0) {
@@ -152,7 +179,7 @@ static __inline void SekRunPS(int cyc_m68k, int cyc_s68k)
       SekCycleCntS68k += m68k_execute(cyc_do);
 #elif defined(EMU_F68K)
       g_m68kcontext = &PicoCpuFS68k;
-      SekCycleCntS68k += fm68k_emulate(cyc_do, 0, 0);
+      SekCycleCntS68k += fm68k_emulate(cyc_do, 0);
 #endif
     }
   }
@@ -207,29 +234,44 @@ static __inline void update_chips(void)
 	// update gfx chip
 	if (Pico_mcd->rot_comp.Reg_58 & 0x8000)
 		gfx_cd_update();
+
+	// delayed setting of DMNA bit (needed for Silpheed)
+	if (Pico_mcd->m.state_flags & 2) {
+		Pico_mcd->m.state_flags &= ~2;
+		if (!(Pico_mcd->s68k_regs[3] & 4)) {
+			Pico_mcd->s68k_regs[3] |=  2;
+			Pico_mcd->s68k_regs[3] &= ~1;
+#ifdef USE_POLL_DETECT
+			if ((s68k_poll_adclk&0xfe) == 2) {
+				SekSetStopS68k(0); s68k_poll_adclk = 0;
+			}
+#endif
+		}
+	}
+}
+
+
+static __inline void getSamples(int y)
+{
+  int len = PsndRender(0, PsndLen);
+  if (PicoWriteSound) PicoWriteSound(len);
+  // clear sound buffer
+  PsndClear();
 }
 
 
 #define PICO_CD
-#define CPUS_RUN(m68k_cycles,s68k_cycles) \
-{ \
-    if ((PicoOpt&POPT_EN_MCD_PSYNC) && (Pico_mcd->m.busreq&3) == 1) { \
-      SekRunPS(m68k_cycles, s68k_cycles); /* "better/perfect sync" */ \
-    } else { \
-      SekRunM68k(m68k_cycles); \
-      if ((Pico_mcd->m.busreq&3) == 1) /* no busreq/no reset */ \
-        SekRunS68k(s68k_cycles); \
-    } \
-}
-#include "../pico_cmn.c"
+#include "../PicoFrameHints.c"
 
 
-PICO_INTERNAL void PicoFrameMCD(void)
+PICO_INTERNAL int PicoFrameMCD(void)
 {
   if (!(PicoOpt&POPT_ALT_RENDERER))
     PicoFrameStart();
 
   PicoFrameHints();
+
+  return 0;
 }
 
 

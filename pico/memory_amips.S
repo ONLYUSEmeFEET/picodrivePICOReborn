@@ -2,7 +2,6 @@
 
 # memory handlers with banking support for SSF II - The New Challengers
 # mostly based on Gens code
-# OUT OF DATE
 
 # (c) Copyright 2007, Grazvydas "notaz" Ignotas
 # All Rights Reserved
@@ -418,9 +417,16 @@ m_read8_misc3:
 m_read8_z80_misc:
     addiu   $t0, 0xc000       # expecting 0x4000 to get 0
     bnez    $t0, m_read_neg1  # invalid
-    nop
-    j       ym2612_read_local_68k
-    nop
+
+    lui     $t0, %hi(PicoOpt)
+    lw      $t0, %lo(PicoOpt)($t0)
+    andi    $t0, 1
+    beqz    $t0, m_read8_fake_ym2612
+    lui     $t0, %hi(Pico+0x22208)
+    lui     $t0, %hi(ym2612_st)
+    lw      $t0, %lo(ym2612_st)($t0)
+    jr      $ra
+    lb      $v0, 0x11($t0)
 
 m_read8_fake_ym2612:
     lb      $v0, %lo(Pico+0x22208)($t0) # Pico.m.rotate
@@ -467,9 +473,7 @@ m_read8_vdp:
     andi    $t1, $a0, 0xe0
     or      $t0, $t1
     bnez    $t0, m_read_null # invalid address
-    nop
-    j       PicoVideoRead8
-    nop
+    m_read8_call16 PicoVideoRead
 
 m_read8_ram:
     lui     $t0, %hi(Pico)

@@ -25,7 +25,7 @@
 #include <eikchkbx.h>
 #include <eikedwob.h>
 
-#include <qiksimpledialog.h>
+#include <QikSimpleDialog.h>
 
 
 /************************************************
@@ -34,19 +34,19 @@
  *
  ************************************************/
 
-extern "C" struct _currentConfig_t;
+class TPicoConfig;
 
 class CPicoConfigDialog : public CEikDialog
 {
 public:
-	CPicoConfigDialog(_currentConfig_t &cfg);
+	CPicoConfigDialog(TPicoConfig &cfg);
 
 protected: // framework
     void PostLayoutDynInitL();
 	void HandleControlStateChangeL(TInt aControlId);
 	TBool OkToExitL(TInt aButtonId);
 
-	_currentConfig_t &config;
+	TPicoConfig &config;
 };
 
 

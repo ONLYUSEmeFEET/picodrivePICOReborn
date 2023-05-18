@@ -1,7 +1,7 @@
 // (c) Copyright 2007 notaz, All rights reserved.
 
 
-#include "../pico_int.h"
+#include "../PicoInt.h"
 
 
 int SekCycleCntS68k=0; // cycles done in this frame
@@ -93,7 +93,7 @@ static void SekIntAckFS68k(unsigned level)
 #endif
 
 
-PICO_INTERNAL void SekInitS68k(void)
+PICO_INTERNAL int SekInitS68k()
 {
 #ifdef EMU_C68K
 //  CycloneInit();
@@ -125,15 +125,24 @@ PICO_INTERNAL void SekInitS68k(void)
     g_m68kcontext = oldcontext;
   }
 #endif
+
+  return 0;
 }
 
 // Reset the 68000:
-PICO_INTERNAL int SekResetS68k(void)
+PICO_INTERNAL int SekResetS68k()
 {
   if (Pico.rom==NULL) return 1;
 
 #ifdef EMU_C68K
-  CycloneReset(&PicoCpuCS68k);
+  PicoCpuCS68k.state_flags=0;
+  PicoCpuCS68k.osp=0;
+  PicoCpuCS68k.srh =0x27; // Supervisor mode
+  PicoCpuCS68k.flags=4;   // Z set
+  PicoCpuCS68k.irq=0;
+  PicoCpuCS68k.a[7]=PicoCpuCS68k.read32(0); // Stack Pointer
+  PicoCpuCS68k.membase=0;
+  PicoCpuCS68k.pc=PicoCpuCS68k.checkpc(PicoCpuCS68k.read32(4)); // Program Counter
 #endif
 #ifdef EMU_M68K
   {

@@ -3,7 +3,7 @@
 // (c) Copyright 2008, Grazvydas "notaz" Ignotas
 // Free for non-commercial use.
 
-#include "../../pico_int.h"
+#include "../../PicoInt.h"
 #include "compiler.h"
 
 #define u32 unsigned int
@@ -23,10 +23,9 @@ extern ssp1601_t *ssp;
 
 #ifndef ARM
 #define DUMP_BLOCK 0x0c9a
-u32 tcache[SSP_TCACHE_SIZE/4];
 u32 *ssp_block_table[0x5090/2];
 u32 *ssp_block_table_iram[15][0x800/2];
-char ssp_align[SSP_BLOCKTAB_ALIGN_SIZE];
+u32 tcache[SSP_TCACHE_SIZE/4];
 void ssp_drc_next(void){}
 void ssp_drc_next_patch(void){}
 void ssp_drc_end(void){}
@@ -1663,7 +1662,7 @@ static void emit_block_prologue(void)
 	// check if there are enough cycles..
 	// note: r0 must contain PC of current block
 	EOP_CMP_IMM(11,0,0);			// cmp r11, #0
-	emit_jump(A_COND_LE, ssp_drc_end);
+	emit_call(A_COND_LE, ssp_drc_end);
 }
 
 /* cond:
@@ -1684,29 +1683,20 @@ static void emit_block_epilogue(int cycles, int cond, int pc, int end_pc)
 		if (target != NULL)
 			emit_jump(A_COND_AL, target);
 		else {
-			int ops = emit_jump(A_COND_AL, ssp_drc_next);
-			// cause the next block to be emitted over jump instruction
-			tcache_ptr -= ops;
+			emit_jump(A_COND_AL, ssp_drc_next);
+			// cause the next block to be emitted over jump instrction
+			tcache_ptr--;
 		}
 	}
 	else {
-		u32 *target1 = (pc     < 0x400) ? ssp_block_table_iram[ssp->drc.iram_context][pc] : ssp_block_table[pc];
+		u32 *target1 = (pc < 0x400) ? ssp_block_table_iram[ssp->drc.iram_context][pc] : ssp_block_table[pc];
 		u32 *target2 = (end_pc < 0x400) ? ssp_block_table_iram[ssp->drc.iram_context][end_pc] : ssp_block_table[end_pc];
 		if (target1 != NULL)
 		     emit_jump(cond, target1);
+		else emit_call(cond, ssp_drc_next_patch);
 		if (target2 != NULL)
 		     emit_jump(tr_neg_cond(cond), target2); // neg_cond, to be able to swap jumps if needed
-#ifndef __EPOC32__
-		// emit patchable branches
-		if (target1 == NULL)
-			emit_call(cond, ssp_drc_next_patch);
-		if (target2 == NULL)
-			emit_call(tr_neg_cond(cond), ssp_drc_next_patch);
-#else
-		// won't patch indirect jumps
-		if (target1 == NULL || target2 == NULL)
-			emit_jump(A_COND_AL, ssp_drc_next);
-#endif
+		else emit_call(tr_neg_cond(cond), ssp_drc_next_patch);
 	}
 }
 
@@ -1717,7 +1707,6 @@ void *ssp_translate_block(int pc)
 	int ret, end_cond = A_COND_AL, jump_pc = -1;
 
 	//printf("translate %04x -> %04x\n", pc<<1, (tcache_ptr-tcache)<<2);
-
 	block_start = tcache_ptr;
 	known_regb = 0;
 	dirty_regb = KRREG_P;
@@ -1758,7 +1747,7 @@ void *ssp_translate_block(int pc)
 	emit_block_epilogue(ccount, end_cond, jump_pc, pc);
 
 	if (tcache_ptr - tcache > SSP_TCACHE_SIZE/4) {
-		elprintf(EL_ANOMALY|EL_STATUS|EL_SVP, "tcache overflow!\n");
+		elprintf(EL_ANOMALY, "tcache overflow!\n");
 		fflush(stdout);
 		exit(1);
 	}
@@ -1774,7 +1763,6 @@ void *ssp_translate_block(int pc)
 		fwrite(tcache, 1, (tcache_ptr - tcache)*4, f);
 		fclose(f);
 	}
-	printf("dumped tcache.bin\n");
 	exit(0);
 #endif
 
@@ -1834,7 +1822,6 @@ void ssp1601_dyn_reset(ssp1601_t *ssp)
 	// prevent new versions of IRAM from appearing
 	memset(svp->iram_rom, 0, 0x800);
 }
-
 
 void ssp1601_dyn_run(int cycles)
 {

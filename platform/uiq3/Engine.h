@@ -27,8 +27,7 @@ enum TPicoGameState {
 	PGS_Paused,
 	PGS_Quit,
 	PGS_KeyConfig,
-	PGS_ReloadRom,
-	PGS_Reset,
+	PGS_DebugHeap,
 };
 
 enum TPicoServRqst {
@@ -49,8 +48,11 @@ enum TPicoGenErrors { // generic errors
 	PicoErrNoErr = 0, // OK
 	PicoErrRomOpenFailed,
 	PicoErrOutOfMem,
+	PicoErrNotRom,
+	PicoErrNoRomsInArchive,
+	PicoErrUncomp, // 5
 	PicoErrOutOfMemSnd,
-	PicoErrGenSnd, // generic sound system error
+	PicoErrGenSnd, // 7 generic sound system error
 	PicoErrEmuThread
 };
 
@@ -79,9 +81,9 @@ struct TPicoKeyConfigEntry
 class TPicoConfig
 {
 public:
-//	void SetDefaults();
-//	void InternalizeL(RReadStream &aStream);
-//	void ExternalizeL(RWriteStream &aStream) const;
+	void SetDefaults();
+	void InternalizeL(RReadStream &aStream);
+	void ExternalizeL(RWriteStream &aStream) const;
 
 	enum TPicoScreenRotation {
 		PRot0,
@@ -100,7 +102,18 @@ public:
 	};
 
 public:
-	TFileName			iLastROMFile;	// used as tmp only
+	TFileName			iLastROMFile;
+
+	TInt32				iScreenRotation;
+	TInt32				iScreenMode;
+	TUint32				iFlags;   // LSb->MSb: use_sram, show_fps, enable_sound, sound_rate(3bits), gzip_saves{=0x40}, dont_use_mot_vol
+    // enable_ym2612&dac, enable_sn76496, enable_z80, stereo_sound;
+    // alt_renderer, 6button_gamepad, accurate_timing
+	TInt32				iPicoOpt;
+	TInt32				iFrameskip;
+	TUint32				iKeyBinds[256]; // a binding for every keycode
+	TUint32				iAreaBinds[19];
+	TInt32				PicoRegion;
 };
 
 
@@ -128,7 +141,7 @@ public:
 	static void freeResources();
 
 	static TBool iEmuRunning;
-	static TBuf<150> iRomInternalName;
+	static TBuf<0x30> iRomInternalName;
 
 private:
 	// services available
@@ -139,5 +152,8 @@ private:
 
 	static CThreadWatcher *iThreadWatcher;
 };
+
+// global
+int saveLoadGame(int load, int sram=0);
 
 #endif

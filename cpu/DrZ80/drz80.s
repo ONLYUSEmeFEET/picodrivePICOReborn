@@ -11,19 +11,20 @@
       .global DrZ80Run
       .global DrZ80Ver
 
-      .equiv INTERRUPT_MODE,         0	;@0 = Use internal int handler, 1 = Use Mames int handler
-      .equiv FAST_Z80SP,             1	;@0 = Use mem functions for stack pointer, 1 = Use direct mem pointer
-      .equiv UPDATE_CONTEXT,         0
-      .equiv DRZ80_XMAP,             1
-      .equiv DRZ80_XMAP_MORE_INLINE, 1
-
-.if DRZ80_XMAP
-      .equ Z80_MEM_SHIFT, 13
-      ;@ note: stack is locked in single bank that z80sp_base points to
-.endif
+      .equiv INTERRUPT_MODE,        0	;@0 = Use internal int handler, 1 = Use Mames int handler
+      .equiv FAST_Z80SP,            1	;@0 = Use mem functions for stack pointer, 1 = Use direct mem pointer
+      .equiv UPDATE_CONTEXT,        0
+      .equiv DRZ80_FOR_PICODRIVE,   1
 
 .if INTERRUPT_MODE
       .extern Interrupt
+.endif
+
+.if DRZ80_FOR_PICODRIVE
+      .extern PicoRead8
+      .extern Pico
+      .extern z80_write
+      .extern ym2612_st
 .endif
 
 DrZ80Ver: .long 0x0001
@@ -31,8 +32,8 @@ DrZ80Ver: .long 0x0001
 ;@ --------------------------- Defines ----------------------------
 ;@ Make sure that regs/pointers for z80pc to z80sp match up!
 
-	z80_icount .req r3
-	opcodes    .req r4
+	opcodes    .req r3
+	z80_icount .req r4
 	cpucontext .req r5
 	z80pc      .req r6
 	z80a       .req r7
@@ -103,116 +104,144 @@ DrZ80Ver: .long 0x0001
 
 .text
 
-.if DRZ80_XMAP
+.if DRZ80_FOR_PICODRIVE
 
-z80_xmap_read8: @ addr
-    ldr r1,[cpucontext,#z80_read8]
-    mov r2,r0,lsr #Z80_MEM_SHIFT
-    ldr r1,[r1,r2,lsl #2]
-    movs r1,r1,lsl #1
-    ldrccb r0,[r1,r0]
-    bxcc lr
+.macro YM2612Read_and_ret8
+    ldr r0, =ym2612_st
+    ldr r0, [r0]
+    ldrb r0, [r0, #0x11]   ;@ ym2612_st->status
+    bx lr
+.endm
 
-z80_xmap_read8_handler: @ addr, func
-    str z80_icount,[cpucontext,#cycles_pointer]
-    stmfd sp!,{r12,lr}
-    mov lr,pc
-    bx r1
-    ldr z80_icount,[cpucontext,#cycles_pointer]
-    ldmfd sp!,{r12,pc}
+.macro YM2612Read_and_ret16
+    ldr r0, =ym2612_st
+    ldr r0, [r0]
+    ldrb r0, [r0, #0x11]   ;@ ym2612_st->status
+    orr r0,r0,r0,lsl #8
+    bx lr
+.endm
 
-z80_xmap_write8: @ data, addr
-    ldr r2,[cpucontext,#z80_write8]
-    add r2,r2,r1,lsr #Z80_MEM_SHIFT-2
-    bic r2,r2,#3
-    ldr r2,[r2]
-    movs r2,r2,lsl #1
-    strccb r0,[r2,r1]
-    bxcc lr
+pico_z80_read8: @ addr
+    cmp r0,#0x2000         @ Z80 RAM
+    ldrlt r1,[cpucontext,#z80sp_base]
+    ldrltb r0,[r1,r0]
+    bxlt lr
 
-z80_xmap_write8_handler: @ data, addr, func
-    str z80_icount,[cpucontext,#cycles_pointer]
-    mov r3,r0
-    mov r0,r1
-    mov r1,r3
-    stmfd sp!,{r12,lr}
-    mov lr,pc
-    bx r2
-    ldr z80_icount,[cpucontext,#cycles_pointer]
-    ldmfd sp!,{r12,pc}
-
-z80_xmap_read16: @ addr
-    @ check if we cross bank boundary
-    add r1,r0,#1
-    eor r1,r1,r0
-    tst r1,#1<<Z80_MEM_SHIFT
+    cmp r0,#0x8000         @ 68k bank
+    blt 1f
+    ldr r2,=(Pico+0x22212)
+    ldrh r1,[r2]
+    bic r0,r0,#0x3f8000
+    orr r0,r0,r1,lsl #15
+    ldr r1,[r2,#-0xe]      @ ROM size
+    cmp r0,r1
+    ldrlt r1,[r2,#-0x12]   @ ROM
+    eorlt r0,r0,#1         @ our ROM is byteswapped
+    ldrltb r0,[r1,r0]
+    bxlt lr
+	stmfd sp!,{r3,r12,lr}
+    bl PicoRead8
+	ldmfd sp!,{r3,r12,pc}
+1:
+    mov r1,r0,lsr #13
+    cmp r1,#2              @ YM2612 (0x4000-0x5fff)
     bne 0f
+    and r0,r0,#3
+    YM2612Read_and_ret8
+0:
+    cmp r0,#0x4000
+    movge r0,#0xff
+    bxge lr
+    ldr r1,[cpucontext,#z80sp_base]
+    bic r0,r0,#0x0fe000    @ Z80 RAM (mirror)
+    ldrb r0,[r1,r0]
+    bx lr
 
-    ldr r1,[cpucontext,#z80_read8]
-    mov r2,r0,lsr #Z80_MEM_SHIFT
-    ldr r1,[r1,r2,lsl #2]
-    movs r1,r1,lsl #1
-    bcs 0f
+pico_z80_read16: @ addr
+    cmp r0,#0x2000         @ Z80 RAM
+    bge 2f
+    ldr r1,[cpucontext,#z80sp_base]
     ldrb r0,[r1,r0]!
     ldrb r1,[r1,#1]
     orr r0,r0,r1,lsl #8
     bx lr
 
-0:
-    @ z80_xmap_read8 will save r3 and r12 for us
-    stmfd sp!,{r8,r9,lr}
-    mov r8,r0
-    bl z80_xmap_read8
-    mov r9,r0
-    add r0,r8,#1
-    bl z80_xmap_read8
-    orr r0,r9,r0,lsl #8
-    ldmfd sp!,{r8,r9,pc}
-
-z80_xmap_write16: @ data, addr
-    add r2,r1,#1
-    eor r2,r2,r1
-    tst r2,#1<<Z80_MEM_SHIFT
+2:
+    cmp r0,#0x8000         @ 68k bank
+    blt 1f
+    ldr r2,=(Pico+0x22212)
+    ldrh r1,[r2]
+    bic r0,r0,#0x1f8000
+    orr r0,r0,r1,lsl #15
+    ldr r1,[r2,#-0xe]      @ ROM size
+    cmp r0,r1
+    ldr r1,[r2,#-0x12]     @ ROM
+    tst r0,#1
+    eor r0,r0,#1
+    ldrb r0,[r1,r0]!
+    ldreqb r1,[r1,#-1]
+    ldrneb r1,[r1,#3]      @ this is due to byteswapped ROM
+    orr r0,r0,r1,lsl #8
+    bx lr
+3:
+    stmfd sp!,{r3-r5,r12,lr}
+    mov r4,r0
+    bl PicoRead8
+    mov r5,r0
+    add r0,r4,#1
+    bl PicoRead8
+    orr r0,r5,r0,lsl #8
+    ldmfd sp!,{r3-r5,r12,pc}
+1:
+    mov r1,r0,lsr #13
+    cmp r1,#2              @ YM2612 (0x4000-0x5fff)
     bne 0f
+    and r0,r0,#3
+    YM2612Read_and_ret16
+0:
+    cmp r0,#0x4000
+    movge r0,#0xff
+    bxge lr
+    ldr r1,[cpucontext,#z80sp_base]
+    bic r0,r0,#0x0fe000    @ Z80 RAM (mirror)
+    ldrb r0,[r1,r0]!
+    ldrb r1,[r1,#1]
+    orr r0,r0,r1,lsl #8
+    bx lr
 
-    ldr r2,[cpucontext,#z80_write8]
-    add r2,r2,r1,lsr #Z80_MEM_SHIFT-2
-    bic r2,r2,#3
-    ldr r2,[r2]
-    movs r2,r2,lsl #1
-    bcs 0f
+pico_z80_write8: @ data, addr
+    cmp r1,#0x4000
+    bge 1f
+    ldr r2,[cpucontext,#z80sp_base]
+    bic r1,r1,#0x0fe000    @ Z80 RAM
+    strb r0,[r2,r1]
+    bx lr
+1:
+    stmfd sp!,{r3,r12,lr}
+    bl z80_write
+    ldmfd sp!,{r3,r12,pc}
+
+pico_z80_write16: @ data, addr
+    cmp r1,#0x4000
+    bge 1f
+    ldr r2,[cpucontext,#z80sp_base]
+    bic r1,r1,#0x0fe000    @ Z80 RAM
     strb r0,[r2,r1]!
     mov r0,r0,lsr #8
     strb r0,[r2,#1]
     bx lr
+1:
+	stmfd sp!,{r3-r5,r12,lr}
+    mov r4,r0
+    mov r5,r1
+	bl z80_write
+    mov r0,r4,lsr #8
+    add r1,r5,#1
+	bl z80_write
+	ldmfd sp!,{r3-r5,r12,pc}
 
-0:
-    stmfd sp!,{r8,r9,lr}
-    mov r8,r0
-    mov r9,r1
-    bl z80_xmap_write8
-    mov r0,r8,lsr #8
-    add r1,r9,#1
-    bl z80_xmap_write8
-    ldmfd sp!,{r8,r9,pc}
-
-z80_xmap_rebase_pc:
-    ldr r1,[cpucontext,#z80_read8]
-    mov r2,r0,lsr #Z80_MEM_SHIFT
-    ldr r1,[r1,r2,lsl #2]
-    movs r1,r1,lsl #1
-    strcc r1,[cpucontext,#z80pc_base]
-    addcc z80pc,r1,r0
-    bxcc lr
-
-z80_bad_jump:
-    ldr r0,[cpucontext,#z80_read8]
-    ldr r0,[r0]
-    str r0,[cpucontext,#z80pc_base]
-    mov z80pc,r0
-    bx lr
+    .pool
 .endif
-
 
 .macro fetch cycs
 	subs z80_icount,z80_icount,#\cycs
@@ -239,18 +268,9 @@ z80_bad_jump:
 .if UPDATE_CONTEXT
     str z80pc,[cpucontext,#z80pc_pointer]
 .endif
-.if DRZ80_XMAP
-.if !DRZ80_XMAP_MORE_INLINE
-    ldr r1,[cpucontext,#z80_read8]
-    mov r2,r0,lsr #Z80_MEM_SHIFT
-    ldr r1,[r1,r2,lsl #2]
-    movs r1,r1,lsl #1
-    ldrccb r0,[r1,r0]
-    blcs z80_xmap_read8_handler
+.if DRZ80_FOR_PICODRIVE
+    bl pico_z80_read8
 .else
-    bl z80_xmap_read8
-.endif
-.else ;@ if !DRZ80_XMAP
     stmfd sp!,{r3,r12}
 	mov lr,pc
 	ldr pc,[cpucontext,#z80_read8]			;@ r0 = addr - data returned in r0
@@ -267,8 +287,8 @@ z80_bad_jump:
 .if UPDATE_CONTEXT
      str z80pc,[cpucontext,#z80pc_pointer]
 .endif
-.if DRZ80_XMAP
-    bl z80_xmap_read16
+.if DRZ80_FOR_PICODRIVE
+    bl pico_z80_read16
 .else
 	stmfd sp!,{r3,r12}
 	mov lr,pc
@@ -281,18 +301,9 @@ z80_bad_jump:
 .if UPDATE_CONTEXT
      str z80pc,[cpucontext,#z80pc_pointer]
 .endif
-.if DRZ80_XMAP
-.if DRZ80_XMAP_MORE_INLINE
-    ldr r2,[cpucontext,#z80_write8]
-    mov lr,r1,lsr #Z80_MEM_SHIFT
-    ldr r2,[r2,lr,lsl #2]
-    movs r2,r2,lsl #1
-    strccb r0,[r2,r1]
-    blcs z80_xmap_write8_handler
+.if DRZ80_FOR_PICODRIVE
+    bl pico_z80_write8
 .else
-    bl z80_xmap_write8
-.endif
-.else ;@ if !DRZ80_XMAP
 	stmfd sp!,{r3,r12}
 	mov lr,pc
 	ldr pc,[cpucontext,#z80_write8]			;@ r0=data r1=addr
@@ -314,8 +325,8 @@ z80_bad_jump:
 .if UPDATE_CONTEXT
      str z80pc,[cpucontext,#z80pc_pointer]
 .endif
-.if DRZ80_XMAP
-    bl z80_xmap_write16
+.if DRZ80_FOR_PICODRIVE
+    bl pico_z80_write16
 .else
 	stmfd sp!,{r3,r12}
 	mov lr,pc
@@ -329,16 +340,19 @@ z80_bad_jump:
      str z80pc,[cpucontext,#z80pc_pointer]
 .endif
 	mov r0,z80hl, lsr #16
-.if DRZ80_XMAP
-    bl z80_xmap_read8
+.if DRZ80_FOR_PICODRIVE
+    bl pico_z80_read8
 .else
     stmfd sp!,{r3,r12}
 	mov lr,pc
 	ldr pc,[cpucontext,#z80_read8]			;@ r0 = addr - data returned in r0
 .endif
+.if UPDATE_CONTEXT
+     str z80pc,[cpucontext,#z80pc_pointer]
+.endif
 	mov r1,z80de, lsr #16
-.if DRZ80_XMAP
-    bl z80_xmap_write8
+.if DRZ80_FOR_PICODRIVE
+    bl pico_z80_write8
 .else
 	mov lr,pc
 	ldr pc,[cpucontext,#z80_write8]			;@ r0=data r1=addr
@@ -351,8 +365,10 @@ z80_bad_jump:
 .if UPDATE_CONTEXT
      str z80pc,[cpucontext,#z80pc_pointer]
 .endif
-.if DRZ80_XMAP
-    bl z80_xmap_rebase_pc
+.if DRZ80_FOR_PICODRIVE
+    bic r0,r0,#0xfe000
+    ldr r1,[cpucontext,#z80pc_base]
+    add z80pc,r1,r0
 .else
     stmfd sp!,{r3,r12}
 	mov lr,pc
@@ -366,10 +382,9 @@ z80_bad_jump:
 .if UPDATE_CONTEXT
      str z80pc,[cpucontext,#z80pc_pointer]
 .endif
-.if DRZ80_XMAP
-    ;@ XXX: SP is locked to single back z80sp_base points to.
+.if DRZ80_FOR_PICODRIVE
+    bic r0,r0,#0xfe000
     ldr r1,[cpucontext,#z80sp_base]
-    bic r0,r0,#0x7f<<Z80_MEM_SHIFT
     add r0,r1,r0
 .else
 	stmfd sp!,{r3,r12}
@@ -737,9 +752,22 @@ z80_bad_jump:
 
 .macro opPOP
 .if FAST_Z80SP
+.if DRZ80_FOR_PICODRIVE
+    @ notaz: try to protect against stack overflows, which tend to happen in Picodrive because of poor timing
+    ldr r2,[cpucontext,#z80sp_base]
+	ldrb r0,[z80sp],#1
+    add r2,r2,#0x2000
+    cmp z80sp,r2
+@    subge z80sp,z80sp,#0x2000 @ unstable?
+	ldrb r1,[z80sp],#1
+    cmp z80sp,r2
+@    subge z80sp,z80sp,#0x2000
+	orr r0,r0,r1, lsl #8
+.else
 	ldrb r0,[z80sp],#1
 	ldrb r1,[z80sp],#1
 	orr r0,r0,r1, lsl #8
+.endif
 .else
 	mov r0,z80sp
 	readmem16
@@ -754,22 +782,23 @@ z80_bad_jump:
 .endm
 ;@---------------------------------------
 
-.macro stack_check
-    @ try to protect against stack overflows, lock into current bank
-    ldr r1,[cpucontext,#z80sp_base]
-    sub r1,z80sp,r1
-    cmp r1,#2
-    addlt z80sp,z80sp,#1<<Z80_MEM_SHIFT
-.endm
-
 .macro opPUSHareg reg @ reg > r1
 .if FAST_Z80SP
-.if DRZ80_XMAP
-	stack_check
-.endif
+.if DRZ80_FOR_PICODRIVE
+    @ notaz: try to protect against stack overflows, which tend to happen in Picodrive because of poor timing
+    ldr r0,[cpucontext,#z80sp_base]
+    cmp z80sp,r0
+    addle z80sp,z80sp,#0x2000
+    mov r1,\reg, lsr #8
+	strb r1,[z80sp,#-1]!
+    cmp z80sp,r0
+    addle z80sp,z80sp,#0x2000
+	strb \reg,[z80sp,#-1]!
+.else
 	mov r1,\reg, lsr #8
 	strb r1,[z80sp,#-1]!
 	strb \reg,[z80sp,#-1]!
+.endif
 .else
     mov r0,\reg
 	sub z80sp,z80sp,#2
@@ -780,13 +809,22 @@ z80_bad_jump:
 
 .macro opPUSHreg reg
 .if FAST_Z80SP
-.if DRZ80_XMAP
-	stack_check
-.endif
+.if DRZ80_FOR_PICODRIVE
+    ldr r0,[cpucontext,#z80sp_base]
+    cmp z80sp,r0
+    addle z80sp,z80sp,#0x2000
+    mov r1,\reg, lsr #24
+	strb r1,[z80sp,#-1]!
+    cmp z80sp,r0
+    addle z80sp,z80sp,#0x2000
+	mov r1,\reg, lsr #16
+	strb r1,[z80sp,#-1]!
+.else
     mov r1,\reg, lsr #24
 	strb r1,[z80sp,#-1]!
 	mov r1,\reg, lsr #16
 	strb r1,[z80sp,#-1]!
+.endif
 .else
 	mov r0,\reg,lsr #16
 	sub z80sp,z80sp,#2
@@ -797,13 +835,14 @@ z80_bad_jump:
 ;@---------------------------------------
 
 .macro opRESmemHL bit
+.if DRZ80_FOR_PICODRIVE
 	mov r0,z80hl, lsr #16
-.if DRZ80_XMAP
-	bl z80_xmap_read8
+    bl pico_z80_read8
 	bic r0,r0,#1<<\bit
 	mov r1,z80hl, lsr #16
-	bl z80_xmap_write8
+    bl pico_z80_write8
 .else
+	mov r0,z80hl, lsr #16
 	stmfd sp!,{r3,r12}
 	mov lr,pc
 	ldr pc,[cpucontext,#z80_read8]			;@ r0 = addr - data returned in r0
@@ -818,12 +857,12 @@ z80_bad_jump:
 ;@---------------------------------------
 
 .macro opRESmem bit
-.if DRZ80_XMAP
+.if DRZ80_FOR_PICODRIVE
 	stmfd sp!,{r0}							;@ save addr as well
-	bl z80_xmap_read8
+    bl pico_z80_read8
 	bic r0,r0,#1<<\bit
 	ldmfd sp!,{r1}							;@ restore addr into r1
-	bl z80_xmap_write8
+    bl pico_z80_write8
 .else
 	stmfd sp!,{r3,r12}
 	stmfd sp!,{r0}							;@ save addr as well
@@ -1078,13 +1117,14 @@ z80_bad_jump:
 ;@---------------------------------------
 
 .macro opSETmemHL bit
+.if DRZ80_FOR_PICODRIVE
 	mov r0,z80hl, lsr #16
-.if DRZ80_XMAP
-	bl z80_xmap_read8
+    bl pico_z80_read8
 	orr r0,r0,#1<<\bit
 	mov r1,z80hl, lsr #16
-	bl z80_xmap_write8
+    bl pico_z80_write8
 .else
+	mov r0,z80hl, lsr #16
 	stmfd sp!,{r3,r12}
 	mov lr,pc
 	ldr pc,[cpucontext,#z80_read8]			;@ r0 = addr - data returned in r0
@@ -1099,12 +1139,12 @@ z80_bad_jump:
 ;@---------------------------------------
 
 .macro opSETmem bit
-.if DRZ80_XMAP
+.if DRZ80_FOR_PICODRIVE
 	stmfd sp!,{r0}	;@ save addr as well
-	bl z80_xmap_read8
+    bl pico_z80_read8
 	orr r0,r0,#1<<\bit
 	ldmfd sp!,{r1}	;@ restore addr into r1
-	bl z80_xmap_write8
+    bl pico_z80_write8
 .else
 	stmfd sp!,{r3,r12}
 	stmfd sp!,{r0}	;@ save addr as well
@@ -1338,32 +1378,30 @@ DrZ80Run:
 	mov z80_icount,r1						;@ setup number of Tstates to execute
 
 .if INTERRUPT_MODE == 0
-	ldrh r0,[cpucontext,#z80irq] @ 0x4C, irq and IFF bits
+	ldrh r0,[cpucontext,#z80irq] @ 0x4C
 .endif
 	ldmia cpucontext,{z80pc-z80sp}			;@ load Z80 registers
 
 .if INTERRUPT_MODE == 0
 	;@ check ints
-	tst r0,#0xff
-	movne r0,r0,lsr #8
-	tstne r0,#1
-	blne DoInterrupt
+	tst r0,#1
+	movnes r0,r0,lsr #8
+    blne DoInterrupt
 .endif
 
+	ldrb r0,[z80pc],#1    ;@ get first op code
 	ldr opcodes,MAIN_opcodes_POINTER2
+	ldr pc,[opcodes,r0, lsl #2]  ;@ execute op code
 
-	cmp z80_icount,#0     ;@ irq might have used all cycles
-	ldrplb r0,[z80pc],#1
-	ldrpl pc,[opcodes,r0, lsl #2]
+MAIN_opcodes_POINTER2: .word MAIN_opcodes
 
 
 z80_execute_end:
 	;@ save registers in CPU context
 	stmia cpucontext,{z80pc-z80sp}			;@ save Z80 registers
-	mov r0,z80_icount
+    mov r0,z80_icount
 	ldmia sp!,{r4-r12,pc}					;@ restore registers from stack and return to C code
 
-MAIN_opcodes_POINTER2: .word MAIN_opcodes
 .if INTERRUPT_MODE
 Interrupt_local: .word Interrupt
 .endif
@@ -1382,8 +1420,6 @@ DoInterrupt:
 	ldmia cpucontext,{z80pc-z80sp}			;@ load Z80 registers
 	mov pc,lr ;@ return
 .else
-
-	;@ r0 == z80if
 	stmfd sp!,{lr}
 
 	tst r0,#4 ;@ check halt
@@ -1396,9 +1432,10 @@ DoInterrupt:
 	strb r0,[cpucontext,#z80if]
 
 	;@ now check int mode
-	cmp r1,#1
-	beq DoInterrupt_mode1
-	bgt DoInterrupt_mode2
+    tst r1,#1
+    bne DoInterrupt_mode1
+    tst r1,#2
+    bne DoInterrupt_mode2
 
 DoInterrupt_mode0:
 	;@ get 3 byte vector
@@ -1428,7 +1465,6 @@ DoInterrupt_mode0:
 	;@ rebase new pc
 	rebasepc
 
-	eatcycles 13
 	b DoInterrupt_end
 
 1:
@@ -1443,7 +1479,6 @@ DoInterrupt_mode0:
 	;@ rebase new pc
 	rebasepc
 
-	eatcycles 13
 	b DoInterrupt_end
 
 DoInterrupt_mode1:
@@ -1453,7 +1488,6 @@ DoInterrupt_mode1:
 	mov r0,#0x38
 	rebasepc
 
-	eatcycles 13
 	b DoInterrupt_end
 
 DoInterrupt_mode2:
@@ -1468,36 +1502,40 @@ DoInterrupt_mode2:
 	orr r0,r0,r1,lsr#16
 
 	;@ read new pc from vector address
+.if DRZ80_FOR_PICODRIVE
+    bl pico_z80_read16
+    bic r0,r0,#0xfe000
+    ldr r1,[cpucontext,#z80pc_base]
+    add z80pc,r1,r0
 .if UPDATE_CONTEXT
      str z80pc,[cpucontext,#z80pc_pointer]
 .endif
-.if DRZ80_XMAP
-    bl z80_xmap_read16
-    rebasepc
 .else
 	stmfd sp!,{r3,r12}
 	mov lr,pc
 	ldr pc,[cpucontext,#z80_read16]
 
 	;@ rebase new pc
+.if UPDATE_CONTEXT
+     str z80pc,[cpucontext,#z80pc_pointer]
+.endif
 	mov lr,pc
 	ldr pc,[cpucontext,#z80_rebasePC] ;@ r0=new pc - external function sets z80pc_base and returns new z80pc in r0
 	ldmfd sp!,{r3,r12}
 	mov z80pc,r0	
 .endif
-	eatcycles 17
 
 DoInterrupt_end:
 	;@ interupt accepted so callback irq interface
 	ldr r0,[cpucontext, #z80irqcallback]
 	tst r0,r0
-	streqb r0,[cpucontext,#z80irq]       ;@ default handling
 	ldmeqfd sp!,{pc}
 	stmfd sp!,{r3,r12}
 	mov lr,pc
 	mov pc,r0    ;@ call callback function
 	ldmfd sp!,{r3,r12}
 	ldmfd sp!,{pc} ;@ return
+
 .endif
 
 .data
@@ -4536,7 +4574,7 @@ opcode_3_8:
 	tst z80f,#1<<CFlag
 	bne opcode_1_8
 	add z80pc,z80pc,#1
-	fetch 7
+	fetch 8
 ;@ADD HL,SP
 opcode_3_9:
 .if FAST_Z80SP
@@ -4554,7 +4592,7 @@ opcode_3_A:
 	orr r0,r0,r1, lsl #8
 	readmem8
 	mov z80a,r0, lsl #24
-	fetch 13
+	fetch 11
 ;@DEC SP
 opcode_3_B:
 	sub z80sp,z80sp,#1
@@ -4858,7 +4896,6 @@ opcode_7_6:
 	ldrb r0,[cpucontext,#z80if]
 	orr r0,r0,#Z80_HALT
 	strb r0,[cpucontext,#z80if]
-	mov z80_icount,#0
 	b z80_execute_end
 ;@LD (HL),A
 opcode_7_7:
@@ -5115,7 +5152,7 @@ opcode_B_F:
 ;@RET NZ
 opcode_C_0:
 	tst z80f,#1<<ZFlag
-	beq opcode_C_9_cond		;@unconditional RET
+	beq opcode_C_9		;@unconditional RET
 	fetch 5
 
 ;@POP BC
@@ -5158,11 +5195,8 @@ opcode_C_7:
 ;@RET Z
 opcode_C_8:
 	tst z80f,#1<<ZFlag
-	bne opcode_C_9_cond		;@unconditional RET
+	bne opcode_C_9		;@unconditional RET
 	fetch 5
-
-opcode_C_9_cond:
-	eatcycles 1
 ;@RET
 opcode_C_9:
     opPOP
@@ -5243,7 +5277,7 @@ opcode_C_F:
 ;@RET NC
 opcode_D_0:
 	tst z80f,#1<<CFlag
-	beq opcode_C_9_cond		;@unconditional RET
+	beq opcode_C_9		;@unconditional RET
 	fetch 5
 ;@POP DE
 opcode_D_1:
@@ -5285,7 +5319,7 @@ opcode_D_7:
 ;@RET C
 opcode_D_8:
 	tst z80f,#1<<CFlag
-	bne opcode_C_9_cond		;@unconditional RET
+	bne opcode_C_9		;@unconditional RET
 	fetch 5
 ;@EXX
 opcode_D_9:
@@ -5371,7 +5405,7 @@ opcode_D_F:
 ;@RET PO
 opcode_E_0:
 	tst z80f,#1<<VFlag
-	beq opcode_C_9_cond		;@unconditional RET
+	beq opcode_C_9		;@unconditional RET
 	fetch 5
 ;@POP HL
 opcode_E_1:
@@ -5426,7 +5460,7 @@ opcode_E_7:
 ;@RET PE
 opcode_E_8:
 	tst z80f,#1<<VFlag
-	bne opcode_C_9_cond		;@unconditional RET
+	bne opcode_C_9		;@unconditional RET
 	fetch 5
 ;@JP (HL)
 opcode_E_9:
@@ -5502,7 +5536,7 @@ opcode_E_F:
 ;@RET P
 opcode_F_0:
 	tst z80f,#1<<SFlag
-	beq opcode_C_9_cond		;@unconditional RET
+	beq opcode_C_9		;@unconditional RET
 	fetch 5
 ;@POP AF
 opcode_F_1:
@@ -5560,7 +5594,7 @@ opcode_F_7:
 ;@RET M
 opcode_F_8:
 	tst z80f,#1<<SFlag
-	bne opcode_C_9_cond		;@unconditional RET
+	bne opcode_C_9		;@unconditional RET
 	fetch 5
 ;@LD SP,HL
 opcode_F_9:
@@ -5571,7 +5605,7 @@ opcode_F_9:
 .else
 	mov z80sp,z80hl, lsr #16
 .endif
-	fetch 6
+	fetch 4
 ;@JP M,$+3
 opcode_F_A:
 	tst z80f,#1<<SFlag
@@ -5583,12 +5617,13 @@ EI_DUMMY_opcodes_POINTER: .word EI_DUMMY_opcodes
 ;@EI
 opcode_F_B:
 	ldrb r1,[cpucontext,#z80if]
-	mov r2,opcodes
+	tst r1,#Z80_IF1
+	bne ei_return_exit
+
 	orr r1,r1,#(Z80_IF1)|(Z80_IF2)
 	strb r1,[cpucontext,#z80if]
 
-	ldrb r0,[z80pc],#1
-	eatcycles 4
+	mov r2,opcodes
 	ldr opcodes,EI_DUMMY_opcodes_POINTER
 	ldr pc,[r2,r0, lsl #2]
 
@@ -5596,17 +5631,16 @@ ei_return:
 	;@point that program returns from EI to check interupts
 	;@an interupt can not be taken directly after a EI opcode
 	;@ reset z80pc and opcode pointer
-	ldrh r0,[cpucontext,#z80irq] @ 0x4C, irq and IFF bits
+	ldrh r0,[cpucontext,#z80irq] @ 0x4C
 	sub z80pc,z80pc,#1
 	ldr opcodes,MAIN_opcodes_POINTER
 	;@ check ints
-	tst r0,#0xff
-	movne r0,r0,lsr #8
-	tstne r0,#1
-	blne DoInterrupt
-
+	tst r0,#1
+	movnes r0,r0,lsr #8
+    blne DoInterrupt
 	;@ continue
-	fetch 0
+ei_return_exit:
+	fetch 4
 
 ;@CALL M,NN
 opcode_F_C:
@@ -6613,7 +6647,7 @@ opcode_DD_NF:
 ;@	b end_loop
 
 opcode_DD_NF2:
-	fetch 23
+	fetch 15
 ;@ notaz: we don't want to deadlock here
 ;@	mov r0,#0xDD0000
 ;@	orr r0,r0,#0xCB00
@@ -6713,8 +6747,7 @@ opcode_DD_2E:
 opcode_DD_34:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r0,r1,r0, lsl #16
-	mov r0,r0,lsr #16
+	add r0,r0,r1, lsr #16
 	stmfd sp!,{r0}	;@ save addr
 	readmem8
 	opINC8b
@@ -6725,8 +6758,7 @@ opcode_DD_34:
 opcode_DD_35:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r0,r1,r0, lsl #16
-	mov r0,r0,lsr #16
+	add r0,r0,r1, lsr #16
 	stmfd sp!,{r0}	;@ save addr
 	readmem8
 	opDEC8b
@@ -6738,8 +6770,7 @@ opcode_DD_36:
 	ldrsb r2,[z80pc],#1
 	ldrb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r1,r1,r2, lsl #16
-	mov r1,r1,lsr #16
+	add r1,r2,r1, lsr #16
 	writemem8
 	fetch 19
 ;@ADD IX,SP
@@ -6770,8 +6801,7 @@ opcode_DD_45:
 opcode_DD_46:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r0,r1,r0, lsl #16
-	mov r0,r0,lsr #16
+	add r0,r0,r1, lsr #16
 	readmem8
 	and z80bc,z80bc,#0xFF<<16
 	orr z80bc,z80bc,r0, lsl #24
@@ -6792,8 +6822,7 @@ opcode_DD_4D:
 opcode_DD_4E:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r0,r1,r0, lsl #16
-	mov r0,r0,lsr #16
+	add r0,r0,r1, lsr #16
 	readmem8
 	and z80bc,z80bc,#0xFF<<24
 	orr z80bc,z80bc,r0, lsl #16
@@ -6815,8 +6844,7 @@ opcode_DD_55:
 opcode_DD_56:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r0,r1,r0, lsl #16
-	mov r0,r0,lsr #16
+	add r0,r0,r1, lsr #16
 	readmem8
 	and z80de,z80de,#0xFF<<16
 	orr z80de,z80de,r0, lsl #24
@@ -6837,8 +6865,7 @@ opcode_DD_5D:
 opcode_DD_5E:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r0,r1,r0, lsl #16
-	mov r0,r0,lsr #16
+	add r0,r0,r1, lsr #16
 	readmem8
 	and z80de,z80de,#0xFF<<24
 	orr z80de,z80de,r0, lsl #16
@@ -6875,8 +6902,7 @@ opcode_DD_65:
 opcode_DD_66:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r0,r1,r0, lsl #16
-	mov r0,r0,lsr #16
+	add r0,r0,r1, lsr #16
 	readmem8
 	and z80hl,z80hl,#0xFF<<16
 	orr z80hl,z80hl,r0, lsl #24
@@ -6918,8 +6944,7 @@ opcode_DD_6D:
 opcode_DD_6E:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r0,r1,r0, lsl #16
-	mov r0,r0,lsr #16
+	add r0,r0,r1, lsr #16
 	readmem8
 	and z80hl,z80hl,#0xFF<<24
 	orr z80hl,z80hl,r0, lsl #16
@@ -6934,8 +6959,7 @@ opcode_DD_6F:
 opcode_DD_70:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r1,r1,r0, lsl #16
-	mov r1,r1,lsr #16
+	add r1,r0,r1, lsr #16
 	mov r0,z80bc, lsr #24
 	writemem8
 	fetch 19
@@ -6943,8 +6967,7 @@ opcode_DD_70:
 opcode_DD_71:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r1,r1,r0, lsl #16
-	mov r1,r1,lsr #16
+	add r1,r0,r1, lsr #16
 	mov r0,z80bc, lsr #16
 	and r0,r0,#0xFF
 	writemem8
@@ -6953,8 +6976,7 @@ opcode_DD_71:
 opcode_DD_72:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r1,r1,r0, lsl #16
-	mov r1,r1,lsr #16
+	add r1,r0,r1, lsr #16
 	mov r0,z80de, lsr #24
 	writemem8
 	fetch 19
@@ -6962,8 +6984,7 @@ opcode_DD_72:
 opcode_DD_73:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r1,r1,r0, lsl #16
-	mov r1,r1,lsr #16
+	add r1,r0,r1, lsr #16
 	mov r0,z80de, lsr #16
 	and r0,r0,#0xFF
 	writemem8
@@ -6972,8 +6993,7 @@ opcode_DD_73:
 opcode_DD_74:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r1,r1,r0, lsl #16
-	mov r1,r1,lsr #16
+	add r1,r0,r1, lsr #16
 	mov r0,z80hl, lsr #24
 	writemem8
 	fetch 19
@@ -6981,8 +7001,7 @@ opcode_DD_74:
 opcode_DD_75:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r1,r1,r0, lsl #16
-	mov r1,r1,lsr #16
+	add r1,r0,r1, lsr #16
 	mov r0,z80hl, lsr #16
 	and r0,r0,#0xFF
 	writemem8
@@ -6991,8 +7010,7 @@ opcode_DD_75:
 opcode_DD_77:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r1,r1,r0, lsl #16
-	mov r1,r1,lsr #16
+	add r1,r0,r1, lsr #16
 	mov r0,z80a, lsr #24
 	writemem8
 	fetch 19
@@ -7011,8 +7029,7 @@ opcode_DD_7D:
 opcode_DD_7E:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r0,r1,r0, lsl #16
-	mov r0,r0,lsr #16
+	add r0,r0,r1, lsr #16
 	readmem8
 	mov z80a,r0, lsl #24
 	fetch 19
@@ -7031,8 +7048,7 @@ opcode_DD_85:
 opcode_DD_86:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r0,r1,r0, lsl #16
-	mov r0,r0,lsr #16
+	add r0,r0,r1, lsr #16
 	readmem8
 	opADDb
 	fetch 19
@@ -7051,8 +7067,7 @@ opcode_DD_8D:
 opcode_DD_8E:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r0,r1,r0, lsl #16
-	mov r0,r0,lsr #16
+	add r0,r0,r1, lsr #16
 	readmem8
 	opADCb
 	fetch 19
@@ -7071,8 +7086,7 @@ opcode_DD_95:
 opcode_DD_96:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r0,r1,r0, lsl #16
-	mov r0,r0,lsr #16
+	add r0,r0,r1, lsr #16
 	readmem8
 	opSUBb
 	fetch 19
@@ -7091,8 +7105,7 @@ opcode_DD_9D:
 opcode_DD_9E:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r0,r1,r0, lsl #16
-	mov r0,r0,lsr #16
+	add r0,r0,r1, lsr #16
 	readmem8
 	opSBCb
 	fetch 19
@@ -7111,8 +7124,7 @@ opcode_DD_A5:
 opcode_DD_A6:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r0,r1,r0, lsl #16
-	mov r0,r0,lsr #16
+	add r0,r0,r1, lsr #16
 	readmem8
 	opANDb
 	fetch 19
@@ -7131,8 +7143,7 @@ opcode_DD_AD:
 opcode_DD_AE:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r0,r1,r0, lsl #16
-	mov r0,r0,lsr #16
+	add r0,r0,r1, lsr #16
 	readmem8
 	opXORb
 	fetch 19
@@ -7151,8 +7162,7 @@ opcode_DD_B5:
 opcode_DD_B6:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r0,r1,r0, lsl #16
-	mov r0,r0,lsr #16
+	add r0,r0,r1, lsr #16
 	readmem8
 	opORb
 	fetch 19
@@ -7171,8 +7181,7 @@ opcode_DD_BD:
 opcode_DD_BE:
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r0,r1,r0, lsl #16
-	mov r0,r0,lsr #16
+	add r0,r0,r1, lsr #16
 	readmem8
 	opCPb
 	fetch 19
@@ -7184,8 +7193,7 @@ opcode_DD_CB:
 ;@moves the PC to the location of the subroutine
 	ldrsb r0,[z80pc],#1
 	ldr r1,[z80xx]
-	add r0,r1,r0, lsl #16
-	mov r0,r0,lsr #16
+	add r0,r0,r1, lsr #16
 
 	ldrb r1,[z80pc],#1
 	ldr pc,[pc,r1, lsl #2]
@@ -8042,5 +8050,5 @@ opcode_ED_BB:
 ;@end_loop:
 ;@     b end_loop
 
-;@ vim:filetype=armasm
+
 

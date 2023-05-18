@@ -21,8 +21,12 @@
  * (of course, that's handled by a different source file :)
  */
 
-#include "pico_int.h"
-#include "patch.h"
+//#include <stdio.h>
+//#include <string.h>
+#include <ctype.h>
+
+#include "PicoInt.h"
+#include "Patch.h"
 
 struct patch
 {
@@ -244,8 +248,7 @@ int PicoPatchLoad(const char *fname)
 
 		llen = strlen(buff);
 		for (clen = 0; clen < llen; clen++)
-			if (isspace_(buff[clen]))
-				break;
+			if (isspace(buff[clen])) break;
 		buff[clen] = 0;
 
 		if (clen > 11 || clen < 8)
@@ -268,11 +271,9 @@ int PicoPatchLoad(const char *fname)
 		strcpy(PicoPatches[PicoPatchCount].code, buff);
 		/* strip */
 		for (clen++; clen < llen; clen++)
-			if (!isspace_(buff[clen]))
-				break;
+			if (!isspace(buff[clen])) break;
 		for (llen--; llen > 0; llen--)
-			if (!isspace_(buff[llen]))
-				break;
+			if (!isspace(buff[llen])) break;
 		buff[llen+1] = 0;
 		strncpy(PicoPatches[PicoPatchCount].name, buff + clen, 51);
 		PicoPatches[PicoPatchCount].name[51] = 0;
@@ -297,8 +298,7 @@ void PicoPatchPrepare(void)
 	for (i = 0; i < PicoPatchCount; i++)
 	{
 		PicoPatches[i].addr &= ~1;
-		if (PicoPatches[i].addr < Pico.romsize)
-			PicoPatches[i].data_old = *(unsigned short *)(Pico.rom + PicoPatches[i].addr);
+		PicoPatches[i].data_old = PicoRead16(PicoPatches[i].addr);
 		if (strstr(PicoPatches[i].name, "AUTO"))
 			PicoPatches[i].active = 1;
 	}
@@ -328,7 +328,9 @@ void PicoPatchApply(void)
 		}
 		else
 		{
-			/* TODO? */
+			/* RAM or some other weird patch */
+			if (PicoPatches[i].active)
+				PicoWrite16(addr, PicoPatches[i].data);
 		}
 	}
 }

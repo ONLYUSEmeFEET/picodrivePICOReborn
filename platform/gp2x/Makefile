@@ -1,4 +1,8 @@
+
+# you may or may not need to change this
+#devkit_path = x:/stuff/dev/devkitgp2x/
 export CROSS = arm-linux-
+#CROSS = $(devkit_path)bin/arm-linux-
 
 # settings
 #mz80 = 1
@@ -27,128 +31,201 @@ else
 use_cyclone = 1
 endif
 
-DEFINC = -I../.. -I. -DARM -D__GP2X__ -DIN_GP2X -DIN_EVDEV # -DBENCHMARK
-CFLAGS += -Wall -Winline
+DEFINC = -I../.. -I. -DARM -D__GP2X__ # -DBENCHMARK
+COPT_COMMON = -static -Wall -Winline
 ifeq ($(DEBUG),)
-CFLAGS += -O3 -fomit-frame-pointer -fstrict-aliasing -ffast-math
+COPT_COMMON += -O3 -ftracer -fstrength-reduce -fomit-frame-pointer -fstrict-aliasing -ffast-math
 else
-CFLAGS += -ggdb
+COPT_COMMON += -ggdb
 endif
 ifeq "$(profile)" "1"
-CFLAGS += -fprofile-generate
+COPT_COMMON += -fprofile-generate
 endif
 ifeq "$(profile)" "2"
-CFLAGS += -fprofile-use
+COPT_COMMON += -fprofile-use
 endif
-CFLAGS += -mcpu=arm920t -mtune=arm920t
-SFLAGS = $(CFLAGS)
-ASFLAGS = -mcpu=arm920t -mfloat-abi=soft
-CC = $(CROSS)gcc
+COPT = $(COPT_COMMON) -mtune=arm920t
+ASOPT = -mcpu=arm920t -mfloat-abi=soft
+GCC = $(CROSS)gcc
 STRIP = $(CROSS)strip
 AS = $(CROSS)as
 LD = $(CROSS)ld
 OBJCOPY = $(CROSS)objcopy
 
 # frontend
-OBJS += plat.o warm.o pollux_set.o soc.o soc_mmsp2.o soc_pollux.o emu.o in_gp2x.o
+OBJS += main.o menu.o gp2x.o usbjoy.o emu.o squidgehack.o cpuctrl.o
 # 940 core control
 OBJS += 940ctl.o
 
 # common
-OBJS += platform/common/emu.o platform/common/menu.o platform/common/fonts.o platform/common/config.o \
-	platform/common/arm_utils.o platform/common/arm_linux.o platform/common/readpng.o \
-	platform/common/mp3_helix.o platform/common/input.o platform/common/main.o \
-	platform/linux/sndout_oss.o platform/linux/plat.o platform/linux/in_evdev.o
+OBJS += ../common/emu.o ../common/menu.o ../common/fonts.o ../common/config.o ../common/arm_utils.o \
+	../common/readpng.o ../common/mp3_helix.o
 
 # Pico
 ifeq "$(amalgamate)" "1"
-OBJS += ../../picoAll.o
+OBJS += ../../PicoAll.o
 else
-OBJS += pico/area.o pico/cart.o pico/memory.o pico/pico.o pico/sek.o pico/z80if.o \
-	pico/videoport.o pico/draw2.o pico/draw.o pico/mode4.o pico/sms.o \
-	pico/misc.o pico/eeprom.o pico/patch.o pico/debug.o
+OBJS += ../../Pico/Area.o ../../Pico/Cart.o ../../Pico/Memory.o ../../Pico/Misc.o \
+		../../Pico/Pico.o ../../Pico/Sek.o ../../Pico/VideoPort.o ../../Pico/Draw2.o ../../Pico/Draw.o \
+		../../Pico/Patch.o
 # Pico - CD
-OBJS += pico/cd/pico.o pico/cd/memory.o pico/cd/sek.o pico/cd/LC89510.o \
-		pico/cd/cd_sys.o pico/cd/cd_file.o pico/cd/cue.o pico/cd/gfx_cd.o \
-		pico/cd/area.o pico/cd/misc.o pico/cd/pcm.o pico/cd/buffering.o
+OBJS += ../../Pico/cd/Pico.o ../../Pico/cd/Memory.o ../../Pico/cd/Sek.o ../../Pico/cd/LC89510.o \
+		../../Pico/cd/cd_sys.o ../../Pico/cd/cd_file.o ../../Pico/cd/cue.o ../../Pico/cd/gfx_cd.o \
+		../../Pico/cd/Area.o ../../Pico/cd/Misc.o ../../Pico/cd/pcm.o ../../Pico/cd/buffering.o
 endif
-# Pico - 32X
-OBJS += pico/32x/32x.o pico/32x/memory.o pico/32x/draw.o pico/32x/pwm.o
 # Pico - Pico
-OBJS += pico/pico/pico.o pico/pico/memory.o pico/pico/xpcm.o
+OBJS += ../../Pico/Pico/Pico.o ../../Pico/Pico/Memory.o
 # Pico - carthw
-OBJS += pico/carthw/carthw.o pico/carthw/svp/svp.o pico/carthw/svp/memory.o \
-		pico/carthw/svp/ssp16.o pico/carthw/svp/compiler.o pico/carthw/svp/stub_arm.o
+OBJS += ../../Pico/carthw/carthw.o ../../Pico/carthw/svp/svp.o ../../Pico/carthw/svp/Memory.o \
+		../../Pico/carthw/svp/ssp16.o ../../Pico/carthw/svp/compiler.o ../../Pico/carthw/svp/stub_arm.o
+
+# asm stuff
+ifeq "$(asm_render)" "1"
+DEFINC += -D_ASM_DRAW_C
+OBJS += ../../Pico/draw_asm.o ../../Pico/draw2_asm.o
+endif
+ifeq "$(asm_memory)" "1"
+DEFINC += -D_ASM_MEMORY_C
+OBJS += ../../Pico/memory_asm.o
+endif
+ifeq "$(asm_ym2612)" "1"
+DEFINC += -D_ASM_YM2612_C
+OBJS += ../../Pico/sound/ym2612_asm.o
+endif
+ifeq "$(asm_misc)" "1"
+DEFINC += -D_ASM_MISC_C
+OBJS += ../../Pico/misc_asm.o
+OBJS += ../../Pico/cd/misc_asm.o
+endif
+ifeq "$(asm_cdpico)" "1"
+DEFINC += -D_ASM_CD_PICO_C
+OBJS += ../../Pico/cd/pico_asm.o
+endif
+ifeq "$(asm_cdmemory)" "1"
+DEFINC += -D_ASM_CD_MEMORY_C
+OBJS += ../../Pico/cd/memory_asm.o
+endif
 
 # Pico - sound
 ifneq "$(amalgamate)" "1"
-OBJS += pico/sound/sound.o
+OBJS += ../../Pico/sound/sound.o
 endif
-OBJS += pico/sound/mix_arm.o
-OBJS += pico/sound/sn76496.o pico/sound/ym2612.o
-# unzip
-OBJS += unzip/unzip.o unzip/unzip_stream.o
+OBJS += ../../Pico/sound/mix_asm.o
+OBJS += ../../Pico/sound/sn76496.o ../../Pico/sound/ym2612.o
 # zlib
-OBJS += zlib/gzio.o zlib/inffast.o zlib/inflate.o zlib/inftrees.o zlib/trees.o \
-	zlib/deflate.o zlib/crc32.o zlib/adler32.o zlib/zutil.o zlib/compress.o
+OBJS += ../../zlib/gzio.o ../../zlib/inffast.o ../../zlib/inflate.o ../../zlib/inftrees.o ../../zlib/trees.o \
+	../../zlib/deflate.o ../../zlib/crc32.o ../../zlib/adler32.o ../../zlib/zutil.o ../../zlib/compress.o
+# unzip
+OBJS += ../../unzip/unzip.o ../../unzip/unzip_stream.o
 # debug
 ifeq "$(debug_cyclone)" "1"
-OBJS += pico/DebugCPU.o cpu/musashi/m68kdasm.o
+OBJS += ../../Pico/Debug.o ../../cpu/musashi/m68kdasm.o
 endif
 # CPU cores
 ifeq "$(use_musashi)" "1"
 DEFINC += -DEMU_M68K
-OBJS += cpu/musashi/m68kops.o cpu/musashi/m68kcpu.o
+OBJS += ../../cpu/musashi/m68kops.o ../../cpu/musashi/m68kcpu.o
 endif
 ifeq "$(use_cyclone)" "1"
 DEFINC += -DEMU_C68K
-OBJS += pico/m68kif_cyclone.o cpu/Cyclone/proj/Cyclone.o cpu/Cyclone/tools/idle.o
+OBJS += ../../cpu/Cyclone/proj/Cyclone.o
 endif
+# drz80/mz80
 ifeq "$(mz80)" "1"
 DEFINC += -D_USE_MZ80
-OBJS += cpu/mz80/mz80.o
+OBJS += ../../cpu/mz80/mz80.o
 else
 DEFINC += -D_USE_DRZ80
-OBJS += cpu/DrZ80/drz80.o
+OBJS += ../../cpu/DrZ80/drz80.o
 endif
 
-vpath %.c = ../..
-vpath %.s = ../..
-vpath %.S = ../..
 
-DIRS = platform platform/gp2x platform/linux platform/common pico pico/cd pico/pico pico/32x \
-	pico/sound pico/carthw/svp zlib unzip cpu cpu/musashi cpu/Cyclone/proj cpu/Cyclone/tools \
-	cpu/mz80 cpu/DrZ80
+all: PicoDrive.gpe
 
-
-all: mkdirs PicoDrive
-
-include ../common/common_arm.mak
-include ../common/revision.mak
-
-# partial linking helps profiled builds due to section merging
-PicoDrive.o : $(OBJS) ../common/helix/$(CROSS)helix-mp3.a
-	$(LD) -r -o $@ $^
-
-# still using static, dynamic linking slows Wiz 1-10%
-# also libm on F100 is not compatible
-PicoDrive : PicoDrive.o
+PicoDrive.gpe : $(OBJS) ../common/helix/helix_mp3.a
 	@echo ">>>" $@
-	$(CC) -static -o $@ $(CFLAGS) $^ -lm -lpng -Wl,-Map=$@.map
+	$(GCC) -o $@ $(COPT) $^ -lm -lpng -Wl,-Map=PicoDrive.map
 ifeq ($(DEBUG),)
 	$(STRIP) $@
 endif
 
-up: PicoDrive
-	@cp -v PicoDrive /mnt/gp2x/mnt/sd/emus/PicoDrive/
+up: PicoDrive.gpe
+	@cp -v PicoDrive.gpe /mnt/gp2x/mnt/sd/emus/PicoDrive/
 
-clean: tidy
-	$(RM) PicoDrive
-tidy:
-	$(RM) $(OBJS)
+#	@cmd //C copy PicoDrive.gpe \\\\10.0.1.2\\gp2x\\mnt\\sd\\games\\PicoDrive\\
+
+
+.c.o:
+	@echo ">>>" $<
+	$(GCC) $(COPT) $(DEFINC) -c $< -o $@
+.s.o:
+	@echo ">>>" $<
+	$(GCC) $(COPT) $(DEFINC) -c $< -o $@
+.S.o:
+	@echo ">>>" $<
+	$(GCC) $(COPT) $(DEFINC) -c $< -o $@
+
+../../Pico/carthw/svp/compiler.o : ../../Pico/carthw/svp/ssp16.o ../../Pico/carthw/svp/gen_arm.c
+
+../../Pico/draw_asm.o : ../../Pico/Draw.s
+	@echo ">>>" $<
+	$(AS) $(ASOPT) $< -o $@
+../../Pico/draw2_asm.o : ../../Pico/Draw2.s
+	@echo ">>>" $<
+	$(AS) $(ASOPT) $< -o $@
+../../Pico/memory_asm.o : ../../Pico/Memory.s
+	@echo ">>>" $<
+	$(AS) $(ASOPT) $< -o $@
+../../Pico/sound/ym2612_asm.o : ../../Pico/sound/ym2612.s
+	@echo ">>>" $<
+	$(AS) $(ASOPT) $< -o $@
+../../Pico/sound/mix_asm.o : ../../Pico/sound/mix.s
+	@echo ">>>" $<
+	$(AS) $(ASOPT) $< -o $@
+../../Pico/misc_asm.o : ../../Pico/Misc.s
+	@echo ">>>" $<
+	$(AS) $(ASOPT) $< -o $@
+../../Pico/cd/pico_asm.o : ../../Pico/cd/Pico.s
+	@echo ">>>" $<
+	$(AS) $(ASOPT) $< -o $@
+../../Pico/cd/memory_asm.o : ../../Pico/cd/Memory.s
+	@echo ">>>" $<
+	$(AS) $(ASOPT) $< -o $@
+../../Pico/cd/misc_asm.o : ../../Pico/cd/Misc.s
+	@echo ">>>" $<
+	$(AS) $(ASOPT) $< -o $@
+
+# build Cyclone
+../../cpu/Cyclone/proj/Cyclone.s :
+	@echo building Cyclone...
+	@make -C ../../cpu/Cyclone/proj CONFIG_FILE=config_pico.h
+
+../../cpu/musashi/m68kops.c :
+	@make -C ../../cpu/musashi
+
+
+# build helix libs
+../common/helix/helix_mp3.a:
+	make -C ../common/helix
 
 readme.txt: ../../tools/textfilter ../base_readme.txt
 	../../tools/textfilter ../base_readme.txt $@ GP2X
+
+../../tools/textfilter: ../../tools/textfilter.c
+	make -C ../../tools/ textfilter
+
+
+# cleanup
+clean: tidy
+	$(RM) PicoDrive.gpe
+tidy:
+	$(RM) $(OBJS)
+#	@make -C ../../cpu/Cyclone/proj -f Makefile.linux clean
+
+
+clean_prof:
+	find ../.. -name '*.gcno' -delete
+	find ../.. -name '*.gcda' -delete
 
 # ----------- release -----------
 ifneq ($(findstring rel,$(MAKECMDGOALS)),)
@@ -156,17 +233,15 @@ ifeq ($(VER),)
 $(error need VER)
 endif
 endif
-CODE940 = code940/pico940_v3.bin
 
-rel: PicoDrive PicoDrive.gpe $(CODE940) readme.txt PicoDrive.png ../game_def.cfg \
-		warm_2.4.25.o warm_2.4.26-open2x.o warm_2.6.24.ko
-	zip -9 -j ../../PicoDrive_$(VER).zip $^
+rel: PicoDrive.gpe code940/pico940_v2.bin readme.txt PicoDrive.man.txt PicoDrive.png ../game_def.cfg
+	zip -9 -j ../../PicoDrive_$(VER).zip $^ mmuhack.o
 	zip -9 -r ../../PicoDrive_$(VER).zip skin -i \*.png -i \*.txt
 	mkdir bin_to_cso_mp3
 	cp ../../tools/bin_to_cso_mp3/* bin_to_cso_mp3/
 	zip -9 -r ../../PicoDrive_$(VER).zip bin_to_cso_mp3
 	rm -rf bin_to_cso_mp3
 
-$(CODE940):
+code940/code940.bin:
 	make -C code940/
 

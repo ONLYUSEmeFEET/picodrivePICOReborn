@@ -13,6 +13,7 @@
 .global ssp_block_table
 .global ssp_block_table_iram
 
+.global flush_inval_caches
 .global ssp_drc_entry
 .global ssp_drc_next
 .global ssp_drc_next_patch
@@ -27,11 +28,11 @@
 .global ssp_hle_11_38a
 
 @ translation cache buffer + pointer table
-.data
+.text
 .align 12 @ 4096
-@.size tcache, SSP_TCACHE_SIZE
-@.size ssp_block_table, SSP_BLOCKTAB_SIZE
-@.size ssp_block_table_iram, SSP_BLOCKTAB_IRAM_SIZE
+.size tcache, SSP_TCACHE_SIZE
+.size ssp_block_table, SSP_BLOCKTAB_SIZE
+.size ssp_block_table_iram, SSP_BLOCKTAB_IRAM_SIZE
 tcache:
  .space SSP_TCACHE_SIZE
 ssp_block_table:
@@ -40,8 +41,15 @@ ssp_block_table_iram:
  .space SSP_BLOCKTAB_IRAM_SIZE
  .space SSP_BLOCKTAB_ALIGN_SIZE
 
+
 .text
 .align 2
+
+
+flush_inval_caches:
+    mov     r2, #0x0  @ must be 0
+    swi     0x9f0002
+    bx      lr
 
 
 @       SSP_GR0, SSP_X,     SSP_Y,   SSP_A,
@@ -58,7 +66,6 @@ ssp_block_table_iram:
 @ r9:  r4-r6 (.654)
 @ r10: P
 @ r11: cycles
-@ r12: tmp
 
 
 #define SSP_OFFS_GR         0x400
@@ -207,13 +214,13 @@ ssp_drc_do_patch:
     bic     r3, r3, #1			@ L bit
     orr     r3, r3, r12,lsl #6
     mov     r3, r3, ror #8              @ patched branch instruction
-    str     r3, [r1, #-4]               @ patch the bl/b to jump directly to another handler
+    str     r3, [r1, #-4]
 
 ssp_drc_dp_end:
     str     r2, [r7, #SSP_OFFS_TMP1]
     sub     r0, r1, #4
     add     r1, r1, #4
-    bl      cache_flush_d_inval_i
+    bl      flush_inval_caches
     ldr     r2, [r7, #SSP_OFFS_TMP1]
     ldr     r0, [r7, #SSP_OFFS_TMP0]
     bx      r2

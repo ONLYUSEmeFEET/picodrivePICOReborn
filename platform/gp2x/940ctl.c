@@ -11,24 +11,29 @@
 #include <errno.h>
 
 #include "code940/940shared.h"
-#include "soc_mmsp2.h"
-#include "soc.h"
+#include "gp2x.h"
+#include "emu.h"
+#include "menu.h"
 #include "../common/mp3.h"
 #include "../common/arm_utils.h"
 #include "../common/menu.h"
 #include "../common/emu.h"
-#include "../common/input.h"
-#include "../../pico/pico_int.h"
-#include "../../pico/sound/ym2612.h"
-#include "../../pico/sound/mix.h"
+#include "../../Pico/PicoInt.h"
+#include "../../Pico/sound/ym2612.h"
+#include "../../Pico/sound/mix.h"
 
+/* we will need some gp2x internals here */
+extern volatile unsigned short *gp2x_memregs; /* from minimal library rlyeh */
+extern volatile unsigned long  *gp2x_memregl;
+
+extern int reset_timing;
 static unsigned char *shared_mem = 0;
 static _940_data_t *shared_data = 0;
 _940_ctl_t *shared_ctl = 0;
 unsigned char *mp3_mem = 0;
 
 #define MP3_SIZE_MAX (0x400000 + 0x800000) // 12M
-#define CODE940_FILE "pico940_v3.bin"
+#define CODE940_FILE "pico940_v2.bin"
 
 int crashed_940 = 0;
 
@@ -46,61 +51,160 @@ static FILE *loaded_mp3 = 0;
 }
 
 /* these will be managed locally on our side */
+static UINT8 *REGS = 0;		/* we will also keep local copy of regs for savestates and such */
+static INT32 *addr_A1;		/* address line A1      */
+
+static int   dacen;
+static INT32 dacout;
 static UINT8 ST_address;	/* address register     */
-static INT32 addr_A1;		/* address line A1      */
 
 static int   writebuff_ptr = 0;
 
+
+/* OPN Mode Register Write */
+static int set_timers( int v )
+{
+	int change;
+
+	/* b7 = CSM MODE */
+	/* b6 = 3 slot mode */
+	/* b5 = reset b */
+	/* b4 = reset a */
+	/* b3 = timer enable b */
+	/* b2 = timer enable a */
+	/* b1 = load b */
+	/* b0 = load a */
+	change = (ym2612_st->mode ^ v) & 0xc0;
+	ym2612_st->mode = v;
+
+	/* reset Timer b flag */
+	if( v & 0x20 )
+		ym2612_st->status &= ~2;
+
+	/* reset Timer a flag */
+	if( v & 0x10 )
+		ym2612_st->status &= ~1;
+
+	return change;
+}
 
 /* YM2612 write */
 /* a = address */
 /* v = value   */
 /* returns 1 if sample affecting state changed */
-int YM2612Write_940(unsigned int a, unsigned int v, int scanline)
+int YM2612Write_940(unsigned int a, unsigned int v)
 {
+	int addr;
 	int upd = 1;	/* the write affects sample generation */
 
+	v &= 0xff;	/* adjust to 8 bit bus */
 	a &= 3;
 
 	//printf("%05i:%03i: ym w ([%i] %02x)\n", Pico.m.frame_count, Pico.m.scanline, a, v);
 
-	switch (a)
-	{
-		case 0:	/* address port 0 */
-			if (addr_A1 == 0 && ST_address == v)
-				return 0; /* address already selected, don't send this command to 940 */
-			ST_address = v;
-			addr_A1 = 0;
-			/* don't send DAC or timer related address changes to 940 */
-			if (v == 0x24 || v == 0x25 || v == 0x26 || v == 0x2a)
+	switch( a ) {
+	case 0:	/* address port 0 */
+		if (!*addr_A1 && ST_address == v)
+			return 0;	/* address already selected, don't send this command to 940 */
+		ST_address = v;
+		/* don't send DAC or timer related address changes to 940 */
+		if (!*addr_A1 && (v & 0xf0) == 0x20 &&
+			(v == 0x24 || v == 0x25 || v == 0x26 || v == 0x2a))
 				return 0;
-			upd = 0;
-			break;
+		*addr_A1 = 0;
+		upd = 0;
+		break;
 
-		case 2:	/* address port 1 */
-			if (addr_A1 == 1 && ST_address == v)
+	case 1:	/* data port 0    */
+		if (*addr_A1 != 0) {
+			return 0;	/* verified on real YM2608 */
+		}
+
+		addr = ST_address;
+		REGS[addr] = v;
+
+		switch( addr & 0xf0 )
+		{
+		case 0x20:	/* 0x20-0x2f Mode */
+			switch( addr )
+			{
+			case 0x24: { // timer A High 8
+					int TAnew = (ym2612_st->TA & 0x03)|(((int)v)<<2);
+					if (ym2612_st->TA != TAnew) {
+						// we should reset ticker only if new value is written. Outrun requires this.
+						ym2612_st->TA = TAnew;
+						ym2612_st->TAC = (1024-TAnew)*18;
+						ym2612_st->TAT = 0;
+					}
+					return 0;
+				}
+			case 0x25: { // timer A Low 2
+					int TAnew = (ym2612_st->TA & 0x3fc)|(v&3);
+					if (ym2612_st->TA != TAnew) {
+						ym2612_st->TA = TAnew;
+						ym2612_st->TAC = (1024-TAnew)*18;
+						ym2612_st->TAT = 0;
+					}
+					return 0;
+				}
+			case 0x26: // timer B
+				if (ym2612_st->TB != v) {
+					ym2612_st->TB = v;
+					ym2612_st->TBC  = (256-v)<<4;
+					ym2612_st->TBC *= 18;
+					ym2612_st->TBT  = 0;
+				}
 				return 0;
-			ST_address = v;
-			addr_A1 = 1;
-			upd = 0;
+			case 0x27:	/* mode, timer control */
+				if (set_timers( v ))
+					break; // other side needs ST.mode for 3slot mode
+				return 0;
+			case 0x2a:	/* DAC data (YM2612) */
+				dacout = ((int)v - 0x80) << 6;	/* level unknown (notaz: 8 seems to be too much) */
+				return 0;
+			case 0x2b:	/* DAC Sel  (YM2612) */
+				/* b7 = dac enable */
+				dacen = v & 0x80;
+				upd = 0;
+				break; // other side has to know this
+			default:
+				break;
+			}
 			break;
+		}
+		break;
+
+	case 2:	/* address port 1 */
+		if (*addr_A1 && ST_address == v)
+			return 0;
+		ST_address = v;
+		*addr_A1 = 1;
+		upd = 0;
+		break;
+
+	case 3:	/* data port 1    */
+		if (*addr_A1 != 1) {
+			return 0;	/* verified on real YM2608 */
+		}
+
+		addr = ST_address | 0x100;
+		REGS[addr] = v;
+		break;
 	}
 
 	//printf("ym pass\n");
 
-	if (currentConfig.EmuOpt & 4)
-	{
+	if(currentConfig.EmuOpt & 4) {
 		UINT16 *writebuff = shared_ctl->writebuffsel ? shared_ctl->writebuff0 : shared_ctl->writebuff1;
 
 		/* detect rapid ym updates */
-		if (upd && !(writebuff_ptr & 0x80000000) && scanline < 224)
-		{
+		if (upd && !(writebuff_ptr & 0x80000000) && Pico.m.scanline < 224) {
 			int mid = Pico.m.pal ? 68 : 93;
-			if (scanline > mid) {
-				//printf("%05i:%03i: rapid ym\n", Pico.m.frame_count, scanline);
+			if (Pico.m.scanline > mid) {
+				//printf("%05i:%03i: rapid ym\n", Pico.m.frame_count, Pico.m.scanline);
 				writebuff[writebuff_ptr++ & 0xffff] = 0xfffe;
 				writebuff_ptr |= 0x80000000;
-				//printf("%05i:%03i: ym w ([%02x] %02x, upd=%i)\n", Pico.m.frame_count, scanline, addr, v, upd);
+				//printf("%05i:%03i: ym w ([%02x] %02x, upd=%i)\n", Pico.m.frame_count, Pico.m.scanline, addr, v, upd);
 			}
 		}
 
@@ -145,7 +249,7 @@ static void wait_busy_940(int job)
 		gp2x_memregs[0x3b46>>1], gp2x_memregl[0x4500>>2], gp2x_memregl[0x4510>>2]);
 	printf("last lr: %08x, lastjob: %i\n", shared_ctl->last_lr, shared_ctl->lastjob);
 
-	me_update_msg("940 crashed, too much overclock?");
+	strcpy(menuErrorMsg, "940 crashed, too much overclock?");
 	engineState = PGS_Menu;
 	crashed_940 = 1;
 }
@@ -168,86 +272,52 @@ static void add_job_940(int job)
 
 void YM2612PicoStateLoad_940(void)
 {
-	UINT8 *REGS = YM2612GetRegs();
+	int i, old_A1 = *addr_A1;
 
 	/* make sure JOB940_PICOSTATELOAD gets done before next JOB940_YM2612UPDATEONE */
 	add_job_940(JOB940_PICOSTATELOAD);
 	if (CHECK_BUSY(JOB940_PICOSTATELOAD)) wait_busy_940(JOB940_PICOSTATELOAD);
 
 	writebuff_ptr = 0;
-	addr_A1 = *(INT32 *) (REGS + 0x200);
-}
 
-void YM2612PicoStateSave2_940(int tat, int tbt)
-{
-	UINT8 *ym_remote_regs, *ym_local_regs;
-	add_job_940(JOB940_PICOSTATESAVE2);
-	if (CHECK_BUSY(JOB940_PICOSTATESAVE2)) wait_busy_940(JOB940_PICOSTATESAVE2);
-
-	ym_remote_regs = (UINT8 *) shared_ctl->writebuff0;
-	ym_local_regs  = YM2612GetRegs();
-	if (*(UINT32 *)(ym_remote_regs + 0x100) != 0x41534d59) {
-		printf("code940 didn't return valid save data\n");
-		return;
+	// feed all the registers and update internal state
+	for(i = 0; i < 0x100; i++) {
+		YM2612Write_940(0, i);
+		YM2612Write_940(1, REGS[i]);
+	}
+	for(i = 0; i < 0x100; i++) {
+		YM2612Write_940(2, i);
+		YM2612Write_940(3, REGS[i|0x100]);
 	}
 
-	/* copy addin data only */
-	memcpy(ym_local_regs,         ym_remote_regs,         0x20);
-	memcpy(ym_local_regs + 0x100, ym_remote_regs + 0x100, 0x30);
-	memcpy(ym_local_regs + 0x0b8, ym_remote_regs + 0x0b8, 0x48);
-	memcpy(ym_local_regs + 0x1b8, ym_remote_regs + 0x1b8, 0x48);
-	*(INT32 *)(ym_local_regs + 0x108) = tat;
-	*(INT32 *)(ym_local_regs + 0x10c) = tbt;
-}
-
-int YM2612PicoStateLoad2_940(int *tat, int *tbt)
-{
-	UINT8 *ym_remote_regs, *ym_local_regs;
-	ym_local_regs  = YM2612GetRegs();
-	ym_remote_regs = (UINT8 *) shared_ctl->writebuff0;
-
-	if (*(UINT32 *)(ym_local_regs + 0x100) != 0x41534d59)
-		return -1;
-
-	*tat = *(INT32 *)(ym_local_regs + 0x108);
-	*tbt = *(INT32 *)(ym_local_regs + 0x10c);
-
-	if (CHECK_BUSY(JOB940_YM2612UPDATEONE)) wait_busy_940(JOB940_YM2612UPDATEONE);
-
-	/* flush writes */
-	if (shared_ctl->writebuffsel == 1) {
-		shared_ctl->writebuff0[writebuff_ptr & 0xffff] = 0xffff;
-	} else {
-		shared_ctl->writebuff1[writebuff_ptr & 0xffff] = 0xffff;
-	}
-	shared_ctl->writebuffsel ^= 1;
-	writebuff_ptr = 0;
-	add_job_940(JOB940_PICOSTATELOAD2_PREP);
-	if (CHECK_BUSY(JOB940_PICOSTATELOAD2_PREP)) wait_busy_940(JOB940_PICOSTATELOAD2_PREP);
-
-	memcpy(ym_remote_regs, ym_local_regs, 0x200);
-
-	add_job_940(JOB940_PICOSTATELOAD2);
-	if (CHECK_BUSY(JOB940_PICOSTATELOAD2)) wait_busy_940(JOB940_PICOSTATELOAD2);
-
-	return 0;
+	*addr_A1 = old_A1;
 }
 
 
 static void internal_reset(void)
 {
 	writebuff_ptr = 0;
-	ST_address = addr_A1 = -1;
+	ym2612_st->mode   = 0;
+	ym2612_st->status = 0;	/* normal mode */
+	ym2612_st->TA     = 0;
+	ym2612_st->TAC    = 0;
+	ym2612_st->TAT    = 0;
+	ym2612_st->TB     = 0;
+	ym2612_st->TBC    = 0;
+	ym2612_st->TBT    = 0;
+	dacen     = 0;
+	dacout    = 0;
+	ST_address= 0;
 }
 
 
 /* this must be called after mmu hack, the allocated regions must not get cached */
-void sharedmem940_init(void)
+void sharedmem_init(void)
 {
 	if (shared_mem != NULL) return;
 
 	shared_mem = (unsigned char *) mmap(0, 0x210000, PROT_READ|PROT_WRITE, MAP_SHARED, memdev, 0x2000000);
-	if (shared_mem == MAP_FAILED)
+	if(shared_mem == MAP_FAILED)
 	{
 		printf("mmap(shared_data) failed with %i\n", errno);
 		exit(1);
@@ -265,7 +335,7 @@ void sharedmem940_init(void)
 }
 
 
-void sharedmem940_finish(void)
+void sharedmem_deinit(void)
 {
 	munmap(shared_mem, 0x210000);
 	munmap(mp3_mem, MP3_SIZE_MAX);
@@ -277,13 +347,14 @@ void sharedmem940_finish(void)
 
 extern char **g_argv;
 
+/* none of the functions in this file should be called before this one */
 void YM2612Init_940(int baseclock, int rate)
 {
 	printf("YM2612Init_940()\n");
 	printf("Mem usage: shared_data: %i, shared_ctl: %i\n", sizeof(*shared_data), sizeof(*shared_ctl));
 
-	reset940(1, 2);
-	pause940(1);
+	Reset940(1, 2);
+	Pause940(1);
 
 	gp2x_memregs[0x3B40>>1] = 0;      // disable DUALCPU interrupts for 920
 	gp2x_memregs[0x3B42>>1] = 1;      // enable  DUALCPU interrupts for 940
@@ -295,19 +366,23 @@ void YM2612Init_940(int baseclock, int rate)
 	if (crashed_940)
 	{
 		unsigned char ucData[1024];
-		int nRead, nLen = 0;
-		char binpath[512];
+		int nRead, i, nLen = 0;
+		char binpath[1024];
 		FILE *fp;
 
-		emu_make_path(binpath, CODE940_FILE, sizeof(binpath));
+		strncpy(binpath, g_argv[0], 1023);
+		binpath[1023] = 0;
+		for (i = strlen(binpath); i > 0; i--)
+			if (binpath[i] == '/') { binpath[i] = 0; break; }
+		strcat(binpath, "/" CODE940_FILE);
+
 		fp = fopen(binpath, "rb");
 		if(!fp)
 		{
-			memset(g_screen_ptr, 0, 320*240*2);
+			memset(gp2x_screen, 0, 320*240*2);
 			text_out16(10, 100, "failed to open required file:");
 			text_out16(10, 110, CODE940_FILE);
 			gp2x_video_flip2();
-			in_menu_wait(PBTN_MOK|PBTN_MBACK, 100);
 			printf("failed to open %s\n", binpath);
 			exit(1);
 		}
@@ -330,6 +405,12 @@ void YM2612Init_940(int baseclock, int rate)
 	/* cause local ym2612 to init REGS */
 	YM2612Init_(baseclock, rate);
 
+	REGS = YM2612GetRegs();
+	addr_A1 = (INT32 *) (REGS + 0x200);
+
+	ym2612_dacen  = &dacen;
+	ym2612_dacout = &dacout;
+
 	internal_reset();
 
 	loaded_mp3 = 0;
@@ -339,8 +420,8 @@ void YM2612Init_940(int baseclock, int rate)
 	gp2x_memregl[0x4510>>2] = 0xffffffff; // clear pending IRQs in INTPND
 
 	/* start the 940 */
-	reset940(0, 2);
-	pause940(0);
+	Reset940(0, 2);
+	Pause940(0);
 
 	// YM2612ResetChip_940(); // will be done on JOB940_YM2612INIT
 
@@ -359,7 +440,6 @@ void YM2612ResetChip_940(void)
 		return;
 	}
 
-	YM2612ResetChip_();
 	internal_reset();
 
 	add_job_940(JOB940_YM2612RESETCHIP);
@@ -390,8 +470,8 @@ int YM2612UpdateOne_940(int *buffer, int length, int stereo, int is_buf_empty)
 
 	/* predict sample counter for next frame */
 	if (PsndLen_exc_add) {
-		length = PsndLen;
-		if (PsndLen_exc_cnt + PsndLen_exc_add >= 0x10000) length++;
+		if (PsndLen_exc_cnt + PsndLen_exc_add >= 0x10000) length = PsndLen + 1;
+		else length = PsndLen;
 	}
 
 	/* give 940 ym job */
@@ -405,23 +485,23 @@ int YM2612UpdateOne_940(int *buffer, int length, int stereo, int is_buf_empty)
 }
 
 
-/***********************************************************/
-
 static int mp3_samples_ready = 0, mp3_buffer_offs = 0;
 static int mp3_play_bufsel = 0, mp3_job_started = 0;
 
 void mp3_update(int *buffer, int length, int stereo)
 {
 	int length_mp3;
+	int cdda_on;
 
-	if (!(PicoOpt & POPT_EXT_FM)) {
+	// playback was started, track not ended
+	cdda_on = loaded_mp3 && shared_ctl->mp3_offs < shared_ctl->mp3_len;
+
+	if (!cdda_on) return;
+
+	if (!(PicoOpt&0x200)) {
 		mp3_update_local(buffer, length, stereo);
 		return;
 	}
-
-	// check if playback was started, track not ended
-	if (loaded_mp3 == NULL || shared_ctl->mp3_offs >= shared_ctl->mp3_len)
-		return;
 
 	length_mp3 = length;
 	if (PsndRate == 22050) length_mp3 <<= 1;	// mp3s are locked to 44100Hz stereo
@@ -475,15 +555,13 @@ void mp3_update(int *buffer, int length, int stereo)
 }
 
 
+/***********************************************************/
+
 void mp3_start_play(FILE *f, int pos) // pos is 0-1023
 {
 	int byte_offs = 0;
 
-	if (!(PicoOpt & POPT_EN_MCD_CDDA) || f == NULL)
-		return;
-
-	if (!(PicoOpt & POPT_EXT_FM)) {
-		mp3_start_play_local(f, pos);
+	if (!(PicoOpt&0x800)) { // cdda disabled?
 		return;
 	}
 
@@ -501,7 +579,7 @@ void mp3_start_play(FILE *f, int pos) // pos is 0-1023
 		shared_ctl->mp3_len = ftell(f);
 		loaded_mp3 = f;
 
-		if (PicoOpt & POPT_EXT_FM) {
+		if (PicoOpt&0x200) {
 			// as we are going to change 940's cacheable area, we must invalidate it's cache..
 			if (CHECK_BUSY(JOB940_MP3DECODE)) wait_busy_940(JOB940_MP3DECODE);
 			add_job_940(JOB940_INVALIDATE_DCACHE);
@@ -515,7 +593,7 @@ void mp3_start_play(FILE *f, int pos) // pos is 0-1023
 		byte_offs *= pos;
 		byte_offs >>= 6;
 	}
-	printf("  mp3 pos1024: %i, byte_offs %i/%i\n", pos, byte_offs, shared_ctl->mp3_len);
+	// printf("mp3 pos1024: %i, byte_offs %i/%i\n", pos, byte_offs, shared_ctl->mp3_len);
 
 	shared_ctl->mp3_offs = byte_offs;
 
@@ -524,7 +602,25 @@ void mp3_start_play(FILE *f, int pos) // pos is 0-1023
 	mp3_job_started = 0;
 	shared_ctl->mp3_buffsel = 1; // will change to 0 on first decode
 
-	add_job_940(JOB940_MP3RESET);
-	if (CHECK_BUSY(JOB940_MP3RESET)) wait_busy_940(JOB940_MP3RESET);
+	if (!(PicoOpt&0x200)) mp3_start_local();
 }
+
+
+int mp3_get_offset(void)
+{
+	unsigned int offs1024 = 0;
+	int cdda_on;
+
+	cdda_on = (PicoAHW & PAHW_MCD) && (PicoOpt&0x800) && !(Pico_mcd->s68k_regs[0x36] & 1) &&
+			(Pico_mcd->scd.Status_CDC & 1) && loaded_mp3;
+
+	if (cdda_on) {
+		offs1024  = shared_ctl->mp3_offs << 7;
+		offs1024 /= shared_ctl->mp3_len  >> 3;
+	}
+	printf("offs1024=%u (%i/%i)\n", offs1024, shared_ctl->mp3_offs, shared_ctl->mp3_len);
+
+	return offs1024;
+}
+
 

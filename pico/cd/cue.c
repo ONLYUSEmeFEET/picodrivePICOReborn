@@ -3,14 +3,11 @@
 #include <string.h>
 #include "cue.h"
 
-#include "../pico_int.h"
+#include "../PicoInt.h"
 // #define elprintf(w,f,...) printf(f "\n",##__VA_ARGS__);
 
 #ifdef _MSC_VER
 #define snprintf _snprintf
-#endif
-#ifdef __EPOC32__
-#define snprintf(b,s,...) sprintf(b,##__VA_ARGS__)
 #endif
 
 static char *mystrip(char *str)

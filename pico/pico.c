@@ -1,39 +1,37 @@
-// PicoDrive
+// This is part of Pico Library
 
 // (c) Copyright 2004 Dave, All rights reserved.
-// (c) Copyright 2006-2008 notaz, All rights reserved.
+// (c) Copyright 2006 notaz, All rights reserved.
 // Free for non-commercial use.
 
 // For commercial use, separate licencing terms must be obtained.
 
 
-#include "pico_int.h"
+#include "PicoInt.h"
 #include "sound/ym2612.h"
 
+int PicoVer=0x0133;
 struct Pico Pico;
-int PicoOpt;     
-int PicoSkipFrame;     // skip rendering frame?
-int PicoPad[2];        // Joypads, format is MXYZ SACB RLDU
-int PicoPadInt[2];     // internal copy
-int PicoAHW;           // active addon hardware: PAHW_*
-int PicoRegionOverride; // override the region detection 0: Auto, 1: Japan NTSC, 2: Japan PAL, 4: US, 8: Europe
-int PicoAutoRgnOrder;
-
-struct PicoSRAM SRam;
-int emustatus;         // rapid_ym2612, multi_ym_updates
-int scanlines_total;
+int PicoOpt = 0;
+int PicoSkipFrame = 0; // skip rendering frame?
+int emustatus = 0;     // rapid_ym2612, multi_ym_updates
+int PicoPad[2];        // Joypads, format is SACB RLDU
+int PicoAHW = 0;       // active addon hardware: scd_active, 32x_active, svp_active, pico_active
+int PicoRegionOverride = 0; // override the region detection 0: Auto, 1: Japan NTSC, 2: Japan PAL, 4: US, 8: Europe
+int PicoAutoRgnOrder = 0;
+int z80startCycle, z80stopCycle; // in 68k cycles
+struct PicoSRAM SRam = {0,};
 
 void (*PicoWriteSound)(int len) = NULL; // called at the best time to send sound buffer (PsndOut) to hardware
 void (*PicoResetHook)(void) = NULL;
-void (*PicoLineHook)(void) = NULL;
+void (*PicoLineHook)(int count) = NULL;
 
 // to be called once on emu init
-void PicoInit(void)
+int PicoInit(void)
 {
   // Blank space for state:
   memset(&Pico,0,sizeof(Pico));
   memset(&PicoPad,0,sizeof(PicoPad));
-  memset(&PicoPadInt,0,sizeof(PicoPadInt));
 
   // Init CPUs:
   SekInit();
@@ -41,7 +39,10 @@ void PicoInit(void)
 
   PicoInitMCD();
   PicoSVPInit();
-  Pico32xInit();
+
+  SRam.data=0;
+
+  return 0;
 }
 
 // to be called once on emu exit
@@ -49,16 +50,14 @@ void PicoExit(void)
 {
   if (PicoAHW & PAHW_MCD)
     PicoExitMCD();
-  PicoCartUnload();
   z80_exit();
 
-  if (SRam.data)
-    free(SRam.data);
+  if (SRam.data) free(SRam.data); SRam.data=0;
 }
 
 void PicoPower(void)
 {
-  Pico.m.frame_count = 0;
+  unsigned char sram_reg=Pico.m.sram_reg; // must be preserved
 
   // clear all memory of the emulated machine
   memset(&Pico.ram,0,(unsigned int)&Pico.rom-(unsigned int)&Pico.ram);
@@ -77,9 +76,7 @@ void PicoPower(void)
   if (PicoAHW & PAHW_MCD)
     PicoPowerMCD();
 
-  if (PicoOpt & POPT_EN_32X)
-    PicoPower32x();
-
+  Pico.m.sram_reg=sram_reg;
   PicoReset();
 }
 
@@ -95,16 +92,14 @@ PICO_INTERNAL void PicoDetectRegion(void)
   else
   {
     // Read cartridge region data:
-    unsigned short *rd = (unsigned short *)(Pico.rom + 0x1f0);
-    int region = (rd[0] << 16) | rd[1];
+    int region=PicoRead32(0x1f0);
 
-    for (i = 0; i < 4; i++)
+    for (i=0;i<4;i++)
     {
-      int c;
+      int c=0;
 
-      c = region >> (i<<3);
-      c &= 0xff;
-      if (c <= ' ') continue;
+      c=region>>(i<<3); c&=0xff;
+      if (c<=' ') continue;
 
            if (c=='J')  support|=1;
       else if (c=='U')  support|=4;
@@ -142,21 +137,14 @@ PICO_INTERNAL void PicoDetectRegion(void)
 
 int PicoReset(void)
 {
-  if (Pico.romsize <= 0)
-    return 1;
+  unsigned char sram_reg=Pico.m.sram_reg; // must be preserved
+
+  if (Pico.romsize<=0) return 1;
 
   /* must call now, so that banking is reset, and correct vectors get fetched */
-  if (PicoResetHook)
-    PicoResetHook();
+  if (PicoResetHook) PicoResetHook();
 
-  memset(&PicoPadInt,0,sizeof(PicoPadInt));
-  emustatus = 0;
-
-  if (PicoAHW & PAHW_SMS) {
-    PicoResetMS();
-    return 0;
-  }
-
+  PicoMemReset();
   SekReset();
   // s68k doesn't have the TAS quirk, so we just globally set normal TAS handler in MCD mode (used by Batman games).
   SekSetRealTAS(PicoAHW & PAHW_MCD);
@@ -165,62 +153,32 @@ int PicoReset(void)
   if (PicoAHW & PAHW_MCD)
     // needed for MCD to reset properly, probably some bug hides behind this..
     memset(Pico.ioports,0,sizeof(Pico.ioports));
+  emustatus = 0;
 
   Pico.m.dirtyPal = 1;
 
-  Pico.m.z80_bank68k = 0;
-  Pico.m.z80_reset = 1;
-  memset(Pico.zram, 0, sizeof(Pico.zram)); // ??
-
   PicoDetectRegion();
-  Pico.video.status = 0x3428 | Pico.m.pal; // 'always set' bits | vblank | collision | pal
+  Pico.video.status = 0x3408 | Pico.m.pal; // 'always set' bits | vblank | pal
 
   PsndReset(); // pal must be known here
 
   // create an empty "dma" to cause 68k exec start at random frame location
-  if (Pico.m.dma_xfers == 0 && !(PicoOpt & POPT_DIS_VDP_FIFO))
+  if (Pico.m.dma_xfers == 0 && !(PicoOpt&POPT_DIS_VDP_FIFO))
     Pico.m.dma_xfers = rand() & 0x1fff;
-
-  SekFinishIdleDet();
 
   if (PicoAHW & PAHW_MCD) {
     PicoResetMCD();
     return 0;
   }
 
-  // reinit, so that checksum checks pass
-  if (!(PicoOpt & POPT_DIS_IDLE_DET))
-    SekInitIdleDet();
-
-  if (PicoOpt & POPT_EN_32X) {
-    PicoReset32x();
-    return 0;
-  }
-
   // reset sram state; enable sram access by default if it doesn't overlap with ROM
-  Pico.m.sram_reg = 0;
-  if ((SRam.flags & SRF_EEPROM) || Pico.romsize <= SRam.start)
-    Pico.m.sram_reg |= SRR_MAPPED;
+  Pico.m.sram_reg=sram_reg&0x14;
+  if (!(Pico.m.sram_reg&4) && Pico.romsize <= SRam.start) Pico.m.sram_reg |= 1;
 
-  if (SRam.flags & SRF_ENABLED)
-    elprintf(EL_STATUS, "sram: %06x - %06x; eeprom: %i", SRam.start, SRam.end,
-      !!(SRam.flags & SRF_EEPROM));
+  elprintf(EL_STATUS, "sram: det: %i; eeprom: %i; start: %06x; end: %06x",
+    (Pico.m.sram_reg>>4)&1, (Pico.m.sram_reg>>2)&1, SRam.start, SRam.end);
 
   return 0;
-}
-
-// flush cinfig changes before emu loop starts
-void PicoLoopPrepare(void)
-{
-  if (PicoRegionOverride)
-    // force setting possibly changed..
-    Pico.m.pal = (PicoRegionOverride == 2 || PicoRegionOverride == 8) ? 1 : 0;
-
-  // FIXME: PAL has 313 scanlines..
-  scanlines_total = Pico.m.pal ? 312 : 262;
-
-  if (PicoAHW & PAHW_32X)
-    p32x_timers_recalc();
 }
 
 
@@ -228,17 +186,17 @@ void PicoLoopPrepare(void)
 // same for Outrunners (92-121, when active is set to 24)
 // 96 is VR hack
 static const int dma_timings[] = {
-  96,  167, 166,  83, // vblank: 32cell: dma2vram dma2[vs|c]ram vram_fill vram_copy
-  102, 205, 204, 102, // vblank: 40cell:
-  16,   16,  15,   8, // active: 32cell:
-  24,   18,  17,   9  // ...
+96,  167, 166,  83, // vblank: 32cell: dma2vram dma2[vs|c]ram vram_fill vram_copy
+102, 205, 204, 102, // vblank: 40cell:
+16,   16,  15,   8, // active: 32cell:
+24,   18,  17,   9  // ...
 };
 
 static const int dma_bsycles[] = {
-  (488<<8)/96,  (488<<8)/167, (488<<8)/166, (488<<8)/83,
-  (488<<8)/102, (488<<8)/205, (488<<8)/204, (488<<8)/102,
-  (488<<8)/16,  (488<<8)/16,  (488<<8)/15,  (488<<8)/8,
-  (488<<8)/24,  (488<<8)/18,  (488<<8)/17,  (488<<8)/9
+(488<<8)/96,  (488<<8)/167, (488<<8)/166, (488<<8)/83,
+(488<<8)/102, (488<<8)/205, (488<<8)/204, (488<<8)/102,
+(488<<8)/16,  (488<<8)/16,  (488<<8)/15,  (488<<8)/8,
+(488<<8)/24,  (488<<8)/18,  (488<<8)/17,  (488<<8)/9
 };
 
 PICO_INTERNAL int CheckDMA(void)
@@ -252,8 +210,7 @@ PICO_INTERNAL int CheckDMA(void)
   if(Pico.video.reg[12] & 1) dma_op |= 4; // 40 cell mode?
   if(!(Pico.video.status&8)&&(Pico.video.reg[1]&0x40)) dma_op|=8; // active display?
   xfers_can = dma_timings[dma_op];
-  if(xfers <= xfers_can)
-  {
+  if(xfers <= xfers_can) {
     if(dma_op&2) Pico.video.status&=~2; // dma no longer busy
     else {
       burn = xfers * dma_bsycles[dma_op] >> 8; // have to be approximate because can't afford division..
@@ -273,7 +230,7 @@ static __inline void SekRunM68k(int cyc)
 {
   int cyc_do;
   SekCycleAim+=cyc;
-  if ((cyc_do=SekCycleAim-SekCycleCnt) <= 0) return;
+  if((cyc_do=SekCycleAim-SekCycleCnt) <= 0) return;
 #if defined(EMU_CORE_DEBUG)
   // this means we do run-compare
   SekCycleCnt+=CM_compareRun(cyc_do, 0);
@@ -284,80 +241,403 @@ static __inline void SekRunM68k(int cyc)
 #elif defined(EMU_M68K)
   SekCycleCnt+=m68k_execute(cyc_do);
 #elif defined(EMU_F68K)
-  SekCycleCnt+=fm68k_emulate(cyc_do+1, 0, 0);
+  SekCycleCnt+=fm68k_emulate(cyc_do+1, 0);
 #endif
 }
 
-#include "pico_cmn.c"
-
-int z80stopCycle;
-int z80_cycle_cnt;        /* 'done' z80 cycles before z80_run() */
-int z80_cycle_aim;
-int z80_scanline;
-int z80_scanline_cycles;  /* cycles done until z80_scanline */
-
-/* sync z80 to 68k */
-PICO_INTERNAL void PicoSyncZ80(int m68k_cycles_done)
+static __inline void SekStep(void)
 {
-  int cnt;
-  z80_cycle_aim = cycles_68k_to_z80(m68k_cycles_done);
-  cnt = z80_cycle_aim - z80_cycle_cnt;
+  // this is required for timing sensitive stuff to work
+  int realaim=SekCycleAim; SekCycleAim=SekCycleCnt+1;
+#if defined(EMU_CORE_DEBUG)
+  SekCycleCnt+=CM_compareRun(1, 0);
+#elif defined(EMU_C68K)
+  PicoCpuCM68k.cycles=1;
+  CycloneRun(&PicoCpuCM68k);
+  SekCycleCnt+=1-PicoCpuCM68k.cycles;
+#elif defined(EMU_M68K)
+  SekCycleCnt+=m68k_execute(1);
+#elif defined(EMU_F68K)
+  SekCycleCnt+=fm68k_emulate(1, 0);
+#endif
+  SekCycleAim=realaim;
+}
 
-  elprintf(EL_BUSREQ, "z80 sync %i (%i|%i -> %i|%i)", cnt, z80_cycle_cnt, z80_cycle_cnt / 228,
-    z80_cycle_aim, z80_cycle_aim / 228);
+static int CheckIdle(void)
+{
+  int i, state[0x24];
 
-  if (cnt > 0)
-    z80_cycle_cnt += z80_run(cnt);
+  // See if the state is the same after 2 steps:
+  SekState(state); SekStep(); SekStep(); SekState(state+0x12);
+  for (i = 0x11; i >= 0; i--)
+    if (state[i] != state[i+0x12]) return 0;
+
+  return 1;
 }
 
 
-void PicoFrame(void)
+// to be called on 224 or line_sample scanlines only
+static __inline void getSamples(int y)
 {
+#if SIMPLE_WRITE_SOUND
+  if (y != 224) return;
+  PsndRender(0, PsndLen);
+  if (PicoWriteSound) PicoWriteSound(PsndLen);
+  PsndClear();
+#else
+  static int curr_pos = 0;
+
+  if(y == 224) {
+    if(emustatus & 2)
+         curr_pos += PsndRender(curr_pos, PsndLen-PsndLen/2);
+    else curr_pos  = PsndRender(0, PsndLen);
+    if (emustatus&1) emustatus|=2; else emustatus&=~2;
+    if (PicoWriteSound) PicoWriteSound(curr_pos);
+    // clear sound buffer
+    PsndClear();
+  }
+  else if(emustatus & 3) {
+    emustatus|= 2;
+    emustatus&=~1;
+    curr_pos = PsndRender(0, PsndLen/2);
+  }
+#endif
+}
+
+
+#include "PicoFrameHints.c"
+
+// helper z80 runner. Runs only if z80 is enabled at this point
+// (z80WriteBusReq will handle the rest)
+static void PicoRunZ80Simple(int line_from, int line_to)
+{
+  int line_from_r=line_from, line_to_r=line_to, line=0;
+  int line_sample = Pico.m.pal ? 68 : 93;
+
+  if (!(PicoOpt&POPT_EN_Z80) || Pico.m.z80Run == 0) line_to_r = 0;
+  else {
+    extern const unsigned short vcounts[];
+    if (z80startCycle) {
+      line = vcounts[z80startCycle>>8];
+      if (line > line_from)
+        line_from_r = line;
+    }
+    z80startCycle = SekCyclesDone();
+  }
+
+  if (PicoOpt&POPT_EN_FM) {
+    // we have ym2612 enabled, so we have to run Z80 in lines, so we could update DAC and timers
+    for (line = line_from; line < line_to; line++) {
+      Psnd_timers_and_dac(line);
+      if ((line == 224 || line == line_sample) && PsndOut) getSamples(line);
+      if (line == 32 && PsndOut) emustatus &= ~1;
+      if (line >= line_from_r && line < line_to_r)
+        z80_run_nr(228);
+    }
+  } else if (line_to_r-line_from_r > 0) {
+    z80_run_nr(228*(line_to_r-line_from_r));
+    // samples will be taken by caller
+  }
+}
+
+// Simple frame without H-Ints
+static int PicoFrameSimple(void)
+{
+  struct PicoVideo *pv=&Pico.video;
+  int y=0,line=0,lines=0,lines_step=0,sects;
+  int cycles_68k_vblock,cycles_68k_block;
+
+  // split to 16 run calls for active scan, for vblank split to 2 (ntsc), 3 (pal 240), 4 (pal 224)
+  if (Pico.m.pal && (pv->reg[1]&8)) {
+    if(pv->reg[1]&8) { // 240 lines
+      cycles_68k_block  = 7329;  // (488*240+148)/16.0, -4
+      cycles_68k_vblock = 11640; // (72*488-148-68)/3.0, 0
+      lines_step = 15;
+    } else {
+      cycles_68k_block  = 6841;  // (488*224+148)/16.0, -4
+      cycles_68k_vblock = 10682; // (88*488-148-68)/4.0, 0
+      lines_step = 14;
+    }
+  } else {
+    // M68k cycles/frame: 127840.71
+    cycles_68k_block  = 6841; // (488*224+148)/16.0, -4
+    cycles_68k_vblock = 9164; // (38*488-148-68)/2.0, 0
+    lines_step = 14;
+  }
+
+  // a hack for VR, to get it running in fast mode
+  if (PicoAHW & PAHW_SVP)
+    Pico.ram[0xd864^1] = 0x1a;
+
+  // we don't emulate DMA timing in this mode
+  if (Pico.m.dma_xfers) {
+    Pico.m.dma_xfers=0;
+    Pico.video.status&=~2;
+  }
+
+  // VDP FIFO too
+  pv->lwrite_cnt = 0;
+  Pico.video.status|=0x200;
+
+  Pico.m.scanline=-1;
+  z80startCycle=0;
+
+  SekCyclesReset();
+
+  // 6 button pad: let's just say it timed out now
+  Pico.m.padTHPhase[0]=Pico.m.padTHPhase[1]=0;
+
+  // ---- Active Scan ----
+  pv->status&=~0x88; // clear V-Int, come out of vblank
+
+  // Run in sections:
+  for(sects=16; sects; sects--)
+  {
+    if (CheckIdle()) break;
+
+    lines += lines_step;
+    SekRunM68k(cycles_68k_block);
+
+    PicoRunZ80Simple(line, lines);
+    if (PicoLineHook) PicoLineHook(lines_step);
+    line=lines;
+  }
+
+  // run Z80 for remaining sections
+  if(sects) {
+    int c = sects*cycles_68k_block;
+
+    // this "run" is for approriate line counter, etc
+    SekCycleCnt += c;
+    SekCycleAim += c;
+
+    lines += sects*lines_step;
+    PicoRunZ80Simple(line, lines);
+    if (PicoLineHook) PicoLineHook(sects*lines_step);
+  }
+
+  // another hack for VR (it needs hints to work)
+  if (PicoAHW & PAHW_SVP) {
+    Pico.ram[0xd864^1] = 1;
+    pv->pending_ints|=0x10;
+    if (pv->reg[0]&0x10) SekInterrupt(4);
+    SekRunM68k(160);
+  }
+
+  // render screen
+  if (!PicoSkipFrame)
+  {
+    if (!(PicoOpt&POPT_ALT_RENDERER))
+    {
+      // Draw the screen
+#if CAN_HANDLE_240_LINES
+      if (pv->reg[1]&8) {
+        for (y=0;y<240;y++) PicoLine(y);
+      } else {
+        for (y=0;y<224;y++) PicoLine(y);
+      }
+#else
+      for (y=0;y<224;y++) PicoLine(y);
+#endif
+    }
+    else PicoFrameFull();
+#ifdef DRAW_FINISH_FUNC
+    DRAW_FINISH_FUNC();
+#endif
+  }
+
+  // here we render sound if ym2612 is disabled
+  if (!(PicoOpt&POPT_EN_FM) && PsndOut) {
+    int len = PsndRender(0, PsndLen);
+    if (PicoWriteSound) PicoWriteSound(len);
+    // clear sound buffer
+    PsndClear();
+  }
+
+  // a gap between flags set and vint
+  pv->pending_ints|=0x20;
+  pv->status|=8; // go into vblank
+  SekRunM68k(68+4);
+
+  // ---- V-Blanking period ----
+  // fix line counts
+  if(Pico.m.pal) {
+    if(pv->reg[1]&8) { // 240 lines
+      lines = line = 240;
+      sects = 3;
+      lines_step = 24;
+    } else {
+      lines = line = 224;
+      sects = 4;
+      lines_step = 22;
+    }
+  } else {
+    lines = line = 224;
+    sects = 2;
+    lines_step = 19;
+  }
+
+  if (pv->reg[1]&0x20) SekInterrupt(6); // Set IRQ
+  if (Pico.m.z80Run && (PicoOpt&POPT_EN_Z80))
+    z80_int();
+
+  while (sects)
+  {
+    lines += lines_step;
+
+    SekRunM68k(cycles_68k_vblock);
+
+    PicoRunZ80Simple(line, lines);
+    if (PicoLineHook) PicoLineHook(lines_step);
+    line=lines;
+
+    sects--;
+    if (sects && CheckIdle()) break;
+  }
+
+  // run Z80 for remaining sections
+  if (sects) {
+    lines += sects*lines_step;
+    PicoRunZ80Simple(line, lines);
+    if (PicoLineHook) PicoLineHook(sects*lines_step);
+  }
+
+  return 0;
+}
+
+int PicoFrame(void)
+{
+  int acc;
+
   Pico.m.frame_count++;
 
-  if (PicoAHW & PAHW_SMS) {
-    PicoFrameMS();
-    return;
-  }
-
-  // TODO: MCD+32X
   if (PicoAHW & PAHW_MCD) {
     PicoFrameMCD();
-    return;
+    return 0;
   }
 
-  if (PicoAHW & PAHW_32X) {
-    PicoFrame32x();
-    return;
-  }
+  // be accurate if we are asked for this
+  if (PicoOpt&POPT_ACC_TIMING) acc=1;
+  // don't be accurate in alternative render mode, as hint effects will not be rendered anyway
+  else if (PicoOpt&POPT_ALT_RENDERER) acc = 0;
+  else acc=Pico.video.reg[0]&0x10; // be accurate if hints are used
 
   //if(Pico.video.reg[12]&0x2) Pico.video.status ^= 0x10; // change odd bit in interlace mode
 
-  PicoFrameStart();
-  PicoFrameHints();
+  if (!(PicoOpt&POPT_ALT_RENDERER))
+    PicoFrameStart();
+
+  if (acc)
+       PicoFrameHints();
+  else PicoFrameSimple();
+
+  return 0;
 }
 
 void PicoFrameDrawOnly(void)
 {
-  if (!(PicoAHW & PAHW_SMS)) {
-    PicoFrameStart();
-    PicoDrawSync(223, 0);
-  } else {
-    PicoFrameDrawOnlyMS();
-  }
+  int y;
+  PicoFrameStart();
+  for (y=0;y<224;y++) PicoLine(y);
 }
 
-void PicoGetInternal(pint_t which, pint_ret_t *r)
+int PicoGetStat(pstat_t which)
 {
   switch (which)
   {
-    case PI_ROM:         r->vptr = Pico.rom; break;
-    case PI_ISPAL:       r->vint = Pico.m.pal; break;
-    case PI_IS40_CELL:   r->vint = Pico.video.reg[12]&1; break;
-    case PI_IS240_LINES: r->vint = Pico.m.pal && (Pico.video.reg[1]&8); break;
+    case PS_PAL:       return Pico.m.pal;
+    case PS_40_CELL:   return Pico.video.reg[12]&1;
+    case PS_240_LINES: return Pico.m.pal && (Pico.video.reg[1]&8);
   }
+  return 0;
 }
 
 // callback to output message from emu
 void (*PicoMessage)(const char *msg)=NULL;
 
+#if 1 // defined(__DEBUG_PRINT)
+// tmp debug: dump some stuff
+#define bit(r, x) ((r>>x)&1)
+void z80_debug(char *dstr);
+char *debugString(void)
+{
+#if 1
+  static char dstr[1024];
+  struct PicoVideo *pv=&Pico.video;
+  unsigned char *reg=pv->reg, r;
+  char *dstrp;
+
+  dstrp = dstr;
+  sprintf(dstrp, "mode set 1: %02x\n", (r=reg[0])); dstrp+=strlen(dstrp);
+  sprintf(dstrp, "display_disable: %i, M3: %i, palette: %i, ?, hints: %i\n", bit(r,0), bit(r,1), bit(r,2), bit(r,4));
+  dstrp+=strlen(dstrp);
+  sprintf(dstrp, "mode set 2: %02x\n", (r=reg[1])); dstrp+=strlen(dstrp);
+  sprintf(dstrp, "SMS/gen: %i, pal: %i, dma: %i, vints: %i, disp: %i, TMS: %i\n", bit(r,2), bit(r,3), bit(r,4),
+  	bit(r,5), bit(r,6), bit(r,7)); dstrp+=strlen(dstrp);
+  sprintf(dstrp, "mode set 3: %02x\n", (r=reg[0xB])); dstrp+=strlen(dstrp);
+  sprintf(dstrp, "LSCR: %i, HSCR: %i, 2cell vscroll: %i, IE2: %i\n", bit(r,0), bit(r,1), bit(r,2), bit(r,3)); dstrp+=strlen(dstrp);
+  sprintf(dstrp, "mode set 4: %02x\n", (r=reg[0xC])); dstrp+=strlen(dstrp);
+  sprintf(dstrp, "interlace: %i%i, cells: %i, shadow: %i\n", bit(r,2), bit(r,1), (r&0x80) ? 40 : 32,  bit(r,3));
+  dstrp+=strlen(dstrp);
+  sprintf(dstrp, "scroll size: w: %i, h: %i  SRAM: %i; eeprom: %i (%i)\n", reg[0x10]&3, (reg[0x10]&0x30)>>4,
+  	bit(Pico.m.sram_reg, 4), bit(Pico.m.sram_reg, 2), SRam.eeprom_type); dstrp+=strlen(dstrp);
+  sprintf(dstrp, "sram range: %06x-%06x, reg: %02x\n", SRam.start, SRam.end, Pico.m.sram_reg); dstrp+=strlen(dstrp);
+  sprintf(dstrp, "pend int: v:%i, h:%i, vdp status: %04x\n", bit(pv->pending_ints,5), bit(pv->pending_ints,4), pv->status);
+  dstrp+=strlen(dstrp);
+#if defined(EMU_C68K)
+  sprintf(dstrp, "M68k: PC: %06x, st_flg: %x, cycles: %u\n", SekPc, PicoCpuCM68k.state_flags, SekCyclesDoneT());
+  dstrp+=strlen(dstrp);
+  sprintf(dstrp, "d0=%08x, a0=%08x, osp=%08x, irql=%i\n", PicoCpuCM68k.d[0], PicoCpuCM68k.a[0], PicoCpuCM68k.osp, PicoCpuCM68k.irq); dstrp+=strlen(dstrp);
+  sprintf(dstrp, "d1=%08x, a1=%08x,  sr=%04x\n", PicoCpuCM68k.d[1], PicoCpuCM68k.a[1], CycloneGetSr(&PicoCpuCM68k)); dstrp+=strlen(dstrp);
+  for(r=2; r < 8; r++) {
+    sprintf(dstrp, "d%i=%08x, a%i=%08x\n", r, PicoCpuCM68k.d[r], r, PicoCpuCM68k.a[r]); dstrp+=strlen(dstrp);
+  }
+#elif defined(EMU_M68K)
+  sprintf(dstrp, "M68k: PC: %06x, cycles: %u, irql: %i\n", SekPc, SekCyclesDoneT(), PicoCpuMM68k.int_level>>8); dstrp+=strlen(dstrp);
+#elif defined(EMU_F68K)
+  sprintf(dstrp, "M68k: PC: %06x, cycles: %u, irql: %i\n", SekPc, SekCyclesDoneT(), PicoCpuFM68k.interrupts[0]); dstrp+=strlen(dstrp);
+#endif
+  sprintf(dstrp, "z80Run: %i, pal: %i, frame#: %i\n", Pico.m.z80Run, Pico.m.pal, Pico.m.frame_count); dstrp+=strlen(dstrp);
+  z80_debug(dstrp); dstrp+=strlen(dstrp);
+  if (strlen(dstr) > sizeof(dstr))
+    printf("warning: debug buffer overflow (%i/%i)\n", strlen(dstr), sizeof(dstr));
+
+#else
+  struct PicoVideo *pvid=&Pico.video;
+  int table=0;
+  int i,u,n,link=0;
+  static char dstr[1024*8];
+  dstr[0] = 0;
+
+  table=pvid->reg[5]&0x7f;
+  if (pvid->reg[12]&1) table&=0x7e; // Lowest bit 0 in 40-cell mode
+  table<<=8; // Get sprite table address/2
+
+  for (i=u=n=0; u < 80 && n < 20; u++)
+  {
+    unsigned int *sprite;
+    int code, code2, sx, sy, height;
+
+    sprite=(unsigned int *)(Pico.vram+((table+(link<<2))&0x7ffc)); // Find sprite
+
+    // get sprite info
+    code = sprite[0];
+
+    // check if it is on this line
+    sy = (code&0x1ff);//-0x80;
+    height = ((code>>24)&3)+1;
+
+    // masking sprite?
+    code2 = sprite[1];
+    sx = (code2>>16)&0x1ff;
+
+    printf("#%02i x: %03i y: %03i %ix%i\n", u, sx, sy, ((code>>26)&3)+1, height);
+
+    link=(code>>16)&0x7f;
+    if(!link) break; // End of sprites
+  }
+#endif
+
+  return dstr;
+}
+#endif

@@ -15,11 +15,11 @@
 #ifndef __AUDIO_MEDIASERVER_H
 #define __AUDIO_MEDIASERVER_H
 
-#include <mda/common/audio.h>
-#include <mdaaudiooutputstream.h>
+#include <Mda\Common\Audio.h>
+#include <MdaAudioOutputStream.h>
 
 //#include "audio.h"
-#include "PolledAS.h"
+#include "polledas.h"
 
 const TInt KSoundBuffers = 4;
 
@@ -44,12 +44,12 @@ public:	// implements IGameAudio
 	TInt16 *NextFrameL(TInt aPcmFrames);
 	TInt16 *ResumeL();
 	void Pause();
-	TInt ChangeVolume(TInt aUp);
+	void ChangeVolume(TInt aUp);
 
 public:
 	~CGameAudioMS();
-	CGameAudioMS(TInt aRate, TBool aStereo, TInt aWritesPerSec, TInt aVolume);
-	static CGameAudioMS* NewL(TInt aRate, TBool aStereo, TInt aWritesPerSec, TInt aVolume);
+	CGameAudioMS(TInt aRate, TBool aStereo, TInt aWritesPerSec);
+	static CGameAudioMS* NewL(TInt aRate, TBool aStereo, TInt aWritesPerSec);
 
 protected:
 	void WriteBlockL();
@@ -70,12 +70,12 @@ protected:
 	CPolledActiveScheduler  *iScheduler;
 
 	HBufC8*					iSoundBuffers[KSoundBuffers];
-	TInt					iWritesPerSec;			// fps, may be more actual writes
-	TInt					iMaxWriteSamples;		// max samples per write
+	TInt					iWritesPerSec;
+	TInt					iBufferedFrames;
 	TInt16*					iCurrentPosition;
-	TInt					iCurrentBuffer;			// active buffer
-	TInt					iCurrentBufferSize;		// bytes filled in buffer
-	TInt					iBufferSize;
+	TInt					iCurrentBuffer;
+	TInt					iCurrentBufferSize;
+	TInt					iFrameCount;
 	CMdaServer*				iServer;
 
 	TInt64					iTime;

@@ -15,7 +15,6 @@
 #include "audio_mediaserver.h"
 #include "debug.h"
 
-//#define DEBUG_UNDERFLOWS
 //#undef DEBUGPRINT
 //#define DEBUGPRINT(x...)
 
@@ -32,16 +31,16 @@ const TInt KMaxUnderflows = 50; // max underflows/API errors we are going allow 
  *
  *******************************************/
 
-CGameAudioMS::CGameAudioMS(TInt aRate, TBool aStereo, TInt aWritesPerSec, TInt aVolume)
-: iRate(aRate), iStereo(aStereo), iWritesPerSec(aWritesPerSec), iVolume(aVolume)
+CGameAudioMS::CGameAudioMS(TInt aRate, TBool aStereo, TInt aWritesPerSec)
+: iRate(aRate), iStereo(aStereo), iWritesPerSec(aWritesPerSec)
 {
 }
 
 
-CGameAudioMS* CGameAudioMS::NewL(TInt aRate, TBool aStereo, TInt aWritesPerSec, TInt aVolume)
+CGameAudioMS* CGameAudioMS::NewL(TInt aRate, TBool aStereo, TInt aWritesPerSec)
 {
-	DEBUGPRINT(_L("CGameAudioMS::NewL(%i, %i, %i, %i)"), aRate, aStereo, aWritesPerSec, aVolume);
-	CGameAudioMS*		self = new(ELeave) CGameAudioMS(aRate, aStereo, aWritesPerSec, aVolume);
+	DEBUGPRINT(_L("CGameAudioMS::NewL(%i, %i, %i)"), aRate, aStereo, aWritesPerSec);
+	CGameAudioMS*		self = new(ELeave) CGameAudioMS(aRate, aStereo, aWritesPerSec);
 	CleanupStack::PushL(self);
 	self->ConstructL();
 	CleanupStack::Pop();		// self
@@ -86,31 +85,25 @@ void CGameAudioMS::ConstructL()
 	iMdaAudioDataSettings.iCaps       = TMdaAudioDataSettings::ESampleRateFixed | iMdaAudioDataSettings.iSampleRate;
 	iMdaAudioDataSettings.iFlags      = TMdaAudioDataSettings::ENoNetworkRouting;
 
-	iMaxWriteSamples = iRate / iWritesPerSec;
-	if (iRate % iWritesPerSec)
-		iMaxWriteSamples++;
-	int bufferedFrames = iWritesPerSec / KUpdatesPerSec;
+	int pcmFrames = iRate / iWritesPerSec;
+	pcmFrames += iRate - (iRate / iWritesPerSec) * iWritesPerSec; // add division remainder too for our buffer size
+	iBufferedFrames = iWritesPerSec / KUpdatesPerSec;
 
-	iBufferSize = iMaxWriteSamples * (iStereo ? 4 : 2);
-	iBufferSize *= bufferedFrames;
+	TInt bytesPerFrame = pcmFrames << (iStereo?2:1);
 	for (TInt i=0 ; i<KSoundBuffers ; i++)
 	{
-		// it seems .SetLength(max) throws USER:23 panic,
-		// so make them a bit larger
-		iSoundBuffers[i] = HBufC8::NewL(iBufferSize+4);
-		iSoundBuffers[i]->Des().FillZ  (iBufferSize+4);
+		iSoundBuffers[i] = HBufC8::NewL(bytesPerFrame * iBufferedFrames);
+		iSoundBuffers[i]->Des().FillZ  (bytesPerFrame * iBufferedFrames);
 	}
 
 	iCurrentBuffer = 0;
 	iCurrentBufferSize = 0;
 
-	DEBUGPRINT(_L("sound: iMaxWriteSamples: %i, iBufferSize: %i"), iMaxWriteSamples, iBufferSize);
-
 	// here we actually test if we can create and open CMdaAudioOutputStream at all, but really create and use it later.
 	iMdaAudioOutputStream = CMdaAudioOutputStream::NewL(iListener, iServer);
-	if (iMdaAudioOutputStream) {
-		if (iVolume < 0 || iVolume > iMdaAudioOutputStream->MaxVolume())
-			iVolume = iMdaAudioOutputStream->MaxVolume();
+	if(iMdaAudioOutputStream) {
+		iVolume = iMdaAudioOutputStream->MaxVolume();
+		DEBUGPRINT(_L("MaxVolume: %i"), iVolume);
 		delete iMdaAudioOutputStream;
 		iMdaAudioOutputStream = 0;
 	}
@@ -120,18 +113,11 @@ void CGameAudioMS::ConstructL()
 // to be used when iSoundBuffers are used directly
 TInt16 *CGameAudioMS::NextFrameL(TInt aPcmFrames)
 {
-	TInt mul = iStereo ? 4 : 2;
-	TInt bytes = aPcmFrames * mul;
-	iCurrentPosition   += bytes / 2;
-	iCurrentBufferSize += bytes;
+	iCurrentPosition   += aPcmFrames << (iStereo?1:0);
+	iCurrentBufferSize += aPcmFrames << (iStereo?2:1);
 
-	if (aPcmFrames > iMaxWriteSamples) {
-		DEBUGPRINT(_L("too many samples: %i > %i"), aPcmFrames, iMaxWriteSamples);
-	}
-
-	if (iCurrentBufferSize + iMaxWriteSamples * mul > iBufferSize)
+	if (++iFrameCount == iBufferedFrames)
 	{
-		//DEBUGPRINT(_L("write on iCurrentBufferSize %i"), iCurrentBufferSize);
 		WriteBlockL();
 	}
 
@@ -176,9 +162,9 @@ void CGameAudioMS::WriteBlockL()
 		}
 	}
 
+	iFrameCount = 0;
 	if (++iCurrentBuffer == KSoundBuffers)
 		iCurrentBuffer = 0;
-	iSoundBuffers[iCurrentBuffer]->Des().SetMax();
 	iCurrentPosition = (TInt16*) iSoundBuffers[iCurrentBuffer]->Ptr();
 	iCurrentBufferSize = 0;
 }
@@ -203,6 +189,7 @@ TInt16 *CGameAudioMS::ResumeL()
 	iListener.iIsOpen = ETrue;
 	iListener.iUnderflowed = 1;
 	iListener.iLastError = 0;
+	iFrameCount = 0;
 	iCurrentBufferSize = 0;
 	iCurrentPosition = (TInt16*) iSoundBuffers[iCurrentBuffer]->Ptr();
 	return iCurrentPosition;
@@ -211,9 +198,7 @@ TInt16 *CGameAudioMS::ResumeL()
 // handles underflow condition
 void CGameAudioMS::UnderflowedL()
 {
-#ifdef DEBUG_UNDERFLOWS
 	DEBUGPRINT(_L("UnderflowedL()"));
-#endif
 
 	if (iListener.iLastError != KErrUnderflow)
 	{
@@ -258,30 +243,23 @@ void CGameAudioMS::WaitForOpenToCompleteL()
 		User::LeaveIfError(KErrNotSupported);
 }
 
-TInt CGameAudioMS::ChangeVolume(TInt aUp)
+void CGameAudioMS::ChangeVolume(TInt aUp)
 {
 	//DEBUGPRINT(_L("CGameAudioMS::ChangeVolume(%i)"), aUp);
 
 	if (iMdaAudioOutputStream) {
 		if (aUp) {
-			iVolume += 5;
-			if (iVolume > iMdaAudioOutputStream->MaxVolume())
-				iVolume = iMdaAudioOutputStream->MaxVolume();
+			if (iVolume < iMdaAudioOutputStream->MaxVolume()) iVolume+=5;
 		} else {
-			iVolume -= 5;
-			if (iVolume < 0) iVolume = 0;
+			if (iVolume > 0) iVolume-=5;
 		}
 		iMdaAudioOutputStream->SetVolume(iVolume);
 	}
-
-	return iVolume;
 }
 
 void TGameAudioEventListener::MaoscOpenComplete(TInt aError)
 {
-#ifdef DEBUG_UNDERFLOWS
 	DEBUGPRINT(_L("CGameAudioMS::MaoscOpenComplete, error=%d"), aError);
-#endif
 
 	iIsOpen = ETrue;
 	if(aError) {
@@ -306,9 +284,7 @@ void TGameAudioEventListener::MaoscBufferCopied(TInt aError, const TDesC8& aBuff
 
 void TGameAudioEventListener::MaoscPlayComplete(TInt aError)
 {
-#ifdef DEBUG_UNDERFLOWS
 	DEBUGPRINT(_L("CGameAudioMS::MaoscPlayComplete: %i"), aError);
-#endif
 	if(aError) {
 		iLastError = aError;
 		iUnderflowed++; // never happened to me while testing, but just in case

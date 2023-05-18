@@ -1,5 +1,8 @@
-#
-PicoDrive 1.xx
+#ifdef GP2X
+For help / comments / questions visit GP32X boards at:
+http://www.gp32x.com/board/
+
+#endif
 
 About
 -----
@@ -30,12 +33,10 @@ How to make it run
 ------------------
 
 #ifdef GP2X
-Extract all files to some directory on your SD and run PicoDrive.gpe from your
-GP2X/Wiz menu. The same .gpe supports GP2X F100/F200 and Wiz, there is no need
-to use separate versions.
+Copy PicoDrive.gpe, pico940_v2.bin and mmuhack.o to any place in your filesystem
+(all 3 files must be in the same directory) and run PicoDrive.gpe.
 Then load a ROM and enjoy! ROMs can be in .smd or .bin format and can be zipped.
-Sega/Mega CD images can be in ISO/CSO+MP3/WAV or CUE+BIN formats (read below
-for more details).
+
 #endif
 #ifdef GIZ
 First make sure you have homebrew-enabled Service Pack installed. Then copy
@@ -44,6 +45,7 @@ be in the same directory) and run PicoDrive.exe using the launcher of your choic
 (some of them might require renaming PicoDrive.exe to Autorun.exe, placing it in
 the root of SD, etc). Then load a ROM and enjoy! ROMs can be placed anywhere, can
 be in .smd or .bin format and can be zipped (one ROM per zip).
+
 #endif
 #ifdef PSP
 If you are running a custom firmware, just copy the whole PicoDrive directory to
@@ -51,37 +53,35 @@ If you are running a custom firmware, just copy the whole PicoDrive directory to
 which one GAME* directory to use).
 
 If you are on 1.5, there is a separate KXploited version for it.
-#endif
-#ifdef UIQ
-Copy SIS and some ROMs to any directory in your memory stick, and install the SIS.
-Then load a ROM and enjoy! ROMs can be in .smd or .bin format and can be zipped.
-#endif
-#ifndef UIQ
 
-This emulator has lots of options with various tweaks (for improved speed mostly),
-but it should have best compatibility in it's default config. If suddently you
-start getting glitches or change something and forget what, use "Restore defaults"
-option.
 #endif
+Note that this emulator may require some tweaking of configuration settings to run
+some games well. For Genesis/MegaDrive, if you have any problems (game does not
+boot, sound is glitchy, broken graphics), try to:
+  * enable "Accurate timing" (options menu)
+#ifdef PSP
+  * enable "accurate renderer"
+#else
+  * enable "16bit accurate renderer"
+#endif
+  * make sure Z80 is not disabled (in "advanced options" submenu in options).
+Some games may need to be reset after adjusting settings.
+
+For possible Sega/Mega CD problems, see "Other important stuff" section below.
 
 
 How to run Sega/Mega CD games
 -----------------------------
 
-To play any game, you need BIOS files. These files must be copied to
-#ifdef UIQ
-D:\other\PicoDrive\ directory.
-#else
-the same directory as PicoDrive files.
-#endif
-Files can be named as follows:
+To play any game, you need BIOS files. These files must be copied to the same
+directory as mentioned PicoDrive files. Files can be named as follows:
 
 US: us_scd1_9210.bin us_scd2_9306.bin SegaCDBIOS9303.bin
 EU: eu_mcd1_9210.bin eu_mcd2_9303.bin eu_mcd2_9306.bin
 JP: jp_mcd1_9112.bin jp_mcd1_9111.bin
 these files can also be zipped.
 
-The game must be dumped to ISO/CSO+MP3/WAV or CUE+BIN format. When using
+The game must be dumped to ISO format, but CUE/BIN can be used too. When using
 CUE/BIN, you must load .cue file from the menu, or else the emu will not find
 audio tracks.
 CUE/BIN usually takes a lot of space, so it can be converted to cue/cso/mp3 by
@@ -101,9 +101,6 @@ Sonic the Hedgehog CD (US) - Track 02.mp3
 Sonic the Hedgehog CD (US) - Track 03.mp3
 ...
 
-In case there is a .cue file with properly specified files names in it,
-file naming doesn't matter. Just be sure to load .cue from the menu.
-
 It is very important to have the MP3s encoded at 44kHz sample rate and they
 must be stereo, or else they will play too fast/slow or won't play at all.
 Be sure NOT to use anything but classic mp3 format (don't use things like
@@ -111,7 +108,7 @@ mp3pro).
 
 ISO files can also be .cso compressed or zipped (but not mp3 files, as they
 are already compressed). CSO will cause slightly longer loading times, and
-is not very good for FMV games. Zipping ISOs is not recommended, as it will
+is not very good for FMV games. Zipping ISOs is not recommened, as it will
 cause very long (several minute) loading times, and make some games
 unplayable. File naming is similar as with uncompressed ISOs.
 Example:
@@ -125,6 +122,9 @@ SonicCD_03.mp3
 Other important stuff
 ---------------------
 
+* If your Genesis/MD game hangs or has glitches, this is most likely because
+  "Accurate timing" option is not enabled, or fast renderer is used
+  (try the accurate one), or Z80 is disabled in "advanced options".
 * Sega/Mega CD: If the game hangs after Sega logo, you may need to enable
   "better sync" and/or "Scale/Rot. fx" options, found in "Sega/Mega CD options"
   submenu, and then reset the game. Some other games may also require
@@ -140,46 +140,99 @@ Other important stuff
   Some games (like Snatcher) may hang in certain scenes because of this.
   Some mp3 rippers/encoders remove silence and beginning/end of audio tracks,
   what causes audio desyncs and/or mentioned problems.
-  If you have cue/bin rip, you can use the bin_to_cso_mp3 tool (included with
-  the emulator) to make a proper iso/mp3 rip.
 * Sega/Mega CD: If your games hangs at the BIOS screen (with planets shown),
   you may be using a bad BIOS dump. Try another from a different source.
 * Some Sega/Mega CD games don't use Z80 for anything, but they leave it active,
   so disabling Z80 manually (in advanced options) improves performance.
+#ifdef GP2X
+* When you use both GP2X CPUs, keep in mind that you can't overclock as high as
+  when using ARM920 only. For example my GP2X when run singlecore can reach
+  280MHz, but with both cores it's about 250MHz. When overclocked too much,
+  it may start hanging and producing random noise, or causing ARM940 crashes
+  ("940 crashed" message displayed).
+#endif
 * Use lower bitrate for better performance (96 or 128kbps CBRs recommended).
 #ifdef GP2X
-* GP2X F100/F200: When you use both GP2X CPUs, keep in mind that you can't
-  overclock as high as when using ARM920 only. For example my GP2X when run
-  singlecore can reach 280MHz, but with both cores it's about 250MHz. When
-  overclocked too much, it may start hanging and producing random noise, or
-  causing ARM940 crashes ("940 crashed" message displayed).
-* GP2X F100/F200: Due to internal implementation mp3s must not be larger that
-  12MB (12582912 bytes). Larger mp3s will not be fully loaded.
+* Due to internal implementation mp3s must not be larger that 12MB
+  (12582912 bytes). Larger mp3s will not be fully loaded.
+* RAM timings option is good for dualcore operation (it is disabled by
+  default because it doesn't work on every GP2X, so enable it in advanced
+  options).
 #endif
 
 
 Configuration
 -------------
 
-#ifdef UIQ
-#include "config.txt"
-#else
-@@0. "Save slot"
-This is a slot number to use for savestates, when done by a button press outside
-menu. This can also be configured to be changed with a button
-(see "key configuration").
+@@0. "Renderer"
+#ifdef GP2X
+8bit fast:
+This enables alternative heavily optimized tile-based renderer, which renders
+pixels not line-by-line (this is what accurate renderers do), but in 8x8 tiles,
+which is much faster. But because of the way it works it can't render any
+mid-frame image changes (raster effects), so it is useful only with some games.
 
-@@0. "Frameskip"
-How many frames to skip rendering before displaying another.
-"Auto" is recommended.
+Other two are accurate line-based renderers. The 8bit is faster but does not
+run well with some games like Street Racer.
 
-@@0. "Region"
-This option lets you force the game to think it is running on machine from the
-specified region, or just to set autodetection order. Also affects Sega/Mega CD.
+#endif
+#ifdef GIZ
+This option allows to switch between 16bit and 8bit renderers. The 8bit one is
+a bit faster for some games, but not much, because colors still need to be
+converted to 16bit, as this is what Gizmondo requires. It also introduces
+graphics problems for some games, so it's best to use 16bit one.
+
+#endif
+#ifdef PSP
+This option allows to switch between fast and accurate renderers. The fast one
+is much faster, because it draws the whole frame at a time, instead of doing it
+line by line, like the accurate one does. But because of the way it works it
+can't render any mid-frame image changes (raster effects), so it is useful only
+for some games.
+
+#endif
+#ifdef GIZ
+@@0. "Scanline mode"
+This option was designed to work around slow framebuffer access (the Gizmondo's
+main bottleneck) by drawing every other line (even numbered lines only).
+This improves performance greatly, but looses detail.
+
+#endif
+#ifdef GP2X
+@@0. "Scaling"
+"hw" means GP2X hardware scaler, which causes no performance loss, but scaled
+image looks a bit blocky. "sw" means software scaling, which uses pixel
+averaging and may look a bit nicer, but blurry. Horizontal scaling is only for
+games which use so called "32 column mode" (256x224 or 256x240), and scales
+image width to 320 pixels. Vertical scales height to 240 for games which use
+height 224 (most of them).
+
+#endif
+#ifdef GIZ
+@@0. "Scale low res mode"
+The Genesis/Megadrive had several graphics modes, some of which were only 256
+pixels wide. This option scales their width to 320 by using simple
+pixel averaging scaling. Works only when 16bit renderer is enabled.
+
+#endif
+@@0. "Accurate timing"
+This adds some more emulation precision, but slows the emulation down. Without
+this option some games do not boot (Red Zone for example), others have sound
+problems. This options has no effect for Sega/Mega CD emulation.
+
+@@0. "Accurate sprites"
+This option improves emulation of sprite priorities, it also enables emulation
+of sprite collision bit. If you see one sprite being drawn incorrectly above
+the other (often seen in Sonic 3D Blast), you can enable this to fix the problem.
+This only works with the accurate renderers (see first option).
 
 @@0. "Show FPS"
 Self-explanatory. Format is XX/YY, where XX is the number of rendered frames and
 YY is the number of emulated frames per second.
+
+@@0. "Frameskip"
+How many frames to skip rendering before displaying another.
+"Auto" is recommended.
 
 @@0. "Enable sound"
 Does what it says. You must enable at least YM2612 or SN76496 (in advanced options,
@@ -192,11 +245,35 @@ Sound sample rate, affects sound quality and emulation performance.
 #else
 Sound sample rate and stereo mode. Mono is not available in Sega/Mega CD mode.
 #endif
+#ifdef GP2X
+If you want 44100Hz sound, it is recommended to enable the second core (next option).
+
+@@0. "Use ARM940 core for sound"
+This option causes PicoDrive to use ARM940T core (GP2X's second CPU) for sound 
+(i.e. to generate YM2612 samples) to improve performance noticeably.
+#endif
+
+@@0. "6 button pad"
+If you enable this, games will think that 6 button gamepad is connected. If you
+go and reconfigure your keys, you will be able to bind X,Y,Z and mode actions.
+
+@@0. "Region"
+This option lets you force the game to think it is running on machine from the
+specified region, or just to set autodetection order. Also affects Sega/Mega CD.
+
+@@0. "Use SRAM/BRAM savestates"
+This will automatically read/write SRAM (or BRAM for Sega/Mega CD) savestates for
+games which are using them. SRAM is saved whenever you enter the menu or exit the
+emulator.
 
 @@0. "Confirm savestate"
 Allows to enable confirmation on savestate saving (to prevent savestate overwrites),
 on loading (to prevent destroying current game progress), and on both or none, when
 using shortcut buttons (not menu) for saving/loading.
+
+@@0. "Save slot"
+This is a slot number to use for savestates. This can also be configured to be
+changed with a button (see "key configuration").
 
 #ifdef GP2X
 @@0. "GP2X CPU clocks"
@@ -204,19 +281,20 @@ Here you can change clocks of both GP2X's CPUs. Larger values increase performan
 There is no separate option for the second CPU because both CPUs use the same clock
 source. Setting this option to 200 will cause PicoDrive NOT to change GP2X's clocks
 at all (this is if you use external program to set clock).
+
 #endif
 #ifdef PSP
 @@0. "CPU/bus clock"
 This allows to change CPU and bus clocks for PSP. 333MHz is recommended.
-#endif
 
 @@0. "[Display options]"
 Enters Display options menu (see below).
 
+#endif
 @@0. "[Sega/Mega CD options]"
 Enters Sega/Mega CD options menu (see below).
 
-@@0. "[Advanced options]"
+@@0. "[advanced options]"
 Enters advanced options menu (see below).
 
 @@0. "Save cfg as default"
@@ -226,77 +304,53 @@ You can press left/right to switch to a different config profile.
 
 @@0. "Save cfg for current game only"
 Whenever you load current ROM again these settings will be loaded
-
-@@0. "Restore defaults"
-Restores all options (except controls) to defaults.
-
-
-Display options
----------------
-
-@@1. "Renderer"
 #ifdef GP2X
-8bit fast:
-This enables alternative heavily optimized tile-based renderer, which renders
-pixels not line-by-line (this is what accurate renderers do), but in 8x8 tiles,
-which is much faster. But because of the way it works it can't render any
-mid-frame image changes (raster effects), so it is useful only with some games.
+(squidgehack and RAM settings will not take effect until emulator is restarted).
+#endif
 
-Other two are accurate line-based renderers. The 8bit is faster but does not
-run well with some games like Street Racer.
-#endif
-#ifdef GIZ
-This option allows to switch between 16bit and 8bit renderers. The 8bit one is
-a bit faster for some games, but not much, because colors still need to be
-converted to 16bit, as this is what Gizmondo requires. It also introduces
-graphics problems for some games, so it's best to use 16bit one.
-#endif
-#ifdef PSP
-This option allows to switch between fast and accurate renderers. The fast one
-is much faster, because it draws the whole frame at a time, instead of doing it
-line by line, like the accurate one does. But because of the way it works it
-can't render any mid-frame image changes (raster effects), so it is useful only
-for some games.
-#endif
+
+Advanced configuration
+----------------------
+
+Enter [advanced options] in config menu to see these options.
 
 #ifdef GP2X
-@@1. "Scaling"
-"hw" means GP2X hardware scaler, which causes no performance loss, but scaled
-image looks a bit blocky. "sw" means software scaling, which uses pixel
-averaging and may look a bit nicer, but blurry. Horizontal scaling is only for
-games which use so called "32 column mode" (256x224 or 256x240), and scales
-image width to 320 pixels. Vertical scales height to 240 for games which use
-height 224 (most of them). Note that Wiz doesn't have the hardware scaler.
-
-@@1. "Tearing Fix"
-Wiz only: works around the tearing problem by using portrait mode. Causes ~5-10%
-performance hit, but eliminates the tearing effect.
-
 @@1. "Gamma correction"
-F100/F200 only: Alters image gamma through GP2X hardware. Larger values make
-image to look brighter, lower - darker (default is 1.0).
+Alters image gamma through GP2X hardware. Larger values make image to look brighter,
+lower - darker (default is 1.0).
 
 @@1. "A_SN's gamma curve"
-F100/F200 only: If this is enabled, different gamma adjustment method will be
-used (suggested by A_SN from gp32x boards). Intended to be used for F100, makes
-difference for dark and bright colors.
+If this is enabled, different gamma adjustment method will be used (suggested by A_SN
+from gp32x boards). Basically it makes difference for dark and bright colors.
 
 @@1. "Perfect vsync"
-This one adjusts the LCD refresh rate to better match game's refresh rate and
-starts synchronizing rendering with it. Should make scrolling smoother and
-eliminate tearing on F100/F200.
+This one adjusts the LCD refresh rate to better match game's refresh rate and starts
+synchronizing rendering with it. Should make scrolling smoother and eliminate tearing.
+
 #endif
+@@1. "Disable sprite limit"
+The MegaDrive/Genesis had a limit on how many sprites (usually smaller moving
+objects) can be displayed on single line. This option allows to disable that
+limit. Note that some games used this to hide unwanted things, so it is not
+always good to enable this option.
+
+@@1. "Emulate Z80"
+Enables emulation of Z80 chip, which was mostly used to drive the other sound chips.
+Some games do complex sync with it, so you must enable it even if you don't use
+sound to be able to play them.
+
+@@1. "Emulate YM2612 (FM)"
+This enables emulation of six-channel FM sound synthesizer chip, which was used to
+produce sound effects and music.
+
+@@1. "Emulate SN76496 (PSG)"
+This enables emulation of additional sound chip for additional effects.
+
+Note: if you change sound settings AFTER loading a ROM, you may need to reset
+game to get sound. This is because most games initialize sound chips on
+startup, and this data is lost when sound chips are being enabled/disabled.
+
 #ifdef GIZ
-@@1. "Scanline mode"
-This option was designed to work around slow framebuffer access (the Gizmondo's
-main bottleneck) by drawing every other line (even numbered lines only).
-This improves performance greatly, but looses detail.
-
-@@1. "Scale low res mode"
-The Genesis/Megadrive had several graphics modes, some of which were only 256
-pixels wide. This option scales their width to 320 by using simple
-pixel averaging scaling. Works only when 16bit renderer is enabled.
-
 @@1. "Double buffering"
 Draws the display to offscreen buffer, and flips it with visible one when done.
 Unfortunately this causes serious tearing, unless v-sync is used (next option).
@@ -305,59 +359,42 @@ Unfortunately this causes serious tearing, unless v-sync is used (next option).
 Waits for vertical sync before drawing (or flipping buffers, if previous option
 is enabled). Emulation is stopped while waiting, so this causes large performance
 hit.
+
 #endif
-#ifdef PSP
-@@1. "Scale factor"
-This allows to resize the displayed image by using the PSP's hardware. The number is
-used to multiply width and height of the game image to get the size of image to be
-displayed. If you just want to make it fullscreen, just use "Set to fullscreen"
-setting below.
+@@1. "gzip savestates"
+This will always apply gzip compression on your savestates, allowing you to
+save some space and load/save time.
 
-@@1. "Hor. scale (for low res. games)"
-This one works similarly as the previous setting, but can be used to apply additional
-scaling horizontally, and is used for games which use lower (256 pixel wide) Gen/MD
-resolution.
+@@1. "Don't save last used ROM"
+This will disable writing last used ROM to config on exit (what might cause SD
+card corruption according to DaveC).
 
-@@1. "Hor. scale (for hi res. games)"
-Same as above, only for higher (320 pixel wide) resolution using games.
+#ifdef GP2X
+@@1. "craigix's RAM timings"
+This overclocks the GP2X RAM chips, but may cause instability. Recommended if you
+use the second core for sound. Needs emulator restart to take effect.
+See this thread:
+http://www.gp32x.com/board/index.php?showtopic=32319
 
-@@1. "Bilinear filtering"
-If this is enabled, PSP hardware will apply bilinear filtering on the resulting image,
-making it smoother, but blurry.
+@@1. "squidgehack"
+Well known way to improve the GP2X performance. You must restart the emulator
+for the change of this option to take effect.
 
-@@1. "Gamma adjustment"
-Color gamma can be adjusted with this.
-
-@@1. "Black level"
-This can be used to reduce unwanted "ghosting" effect for dark games, by making
-black pixels brighter. Use in conjunction with "gamma adjustment" for more effect.
-
-@@1. "Wait for vsync"
-Wait for the screen to finish updating before switching to next frame, to avoid tearing.
-There are 3 options:
-* never: don't wait for vsync.
-* sometimes: wait only if emulator is running fast enough.
-* always: always wait (causes emulation slowdown).
-
-@@1. "Set to unscaled centered"
-Adjust the resizing options to set game image to it's original size.
-
-@@1. "Set to 4:3 scaled"
-Scale the image up, but keep 4:3 aspect, by adding black borders.
-
-@@1. "Set to fullscreen"
-Adjust the resizing options to make the game image fullscreen.
 #endif
-
 
 Sega/Mega CD options 
 --------------------
+
+@@2,@@2,@@2. "USA/EUR/JAP BIOS"
+These options just show if your BIOS files were correctly detected by the
+emulator (it shows the filename it is using). If so, you can press Start to
+test your BIOS.
 
 @@2. "CD LEDs"
 The Sega/Mega CD unit had two blinking LEDs (red and green) on it. This option
 will display them on top-left corner of the screen.
 
-@@2. "CDDA audio"
+@@2. "CDDA audio (using mp3s)"
 This option enables CD audio playback.
 
 @@2. "PCM audio"
@@ -365,7 +402,7 @@ This enables 8 channel PCM sound source. It is required for some games to run,
 because they monitor state of this audio chip.
 
 @@2. "ReadAhead buffer"
-This option can prefetch more data from the CD image than requested by game
+This option can prefetch more data from the CD image then requested by game
 (to avoid accessing card later), what can improve performance in some cases.
 #ifndef PSP
 "OFF" is the recommended setting.
@@ -385,72 +422,50 @@ for example most (all?) Wolfteam games, and some other ones. Don't use it for
 games which don't need it, it will just slow them down.
 
 
-Advanced configuration
-----------------------
+#ifdef PSP
+Display options
+---------------
 
-@@3. "Use SRAM/BRAM savestates"
-This will automatically read/write SRAM (or BRAM for Sega/Mega CD) savestates for
-games which are using them. SRAM is saved whenever you enter the menu or exit the
-emulator.
+@@3. "Scale factor"
+This allows to resize the displayed image by using the PSP's hardware. The number is
+used to multiply width and height of the game image to get the size of image to be
+displayed. If you just want to make it fullscreen, just use "Set to fullscreen"
+setting below.
 
-@@3. "Disable sprite limit"
-The MegaDrive/Genesis had a limit on how many sprites (usually smaller moving
-objects) can be displayed on single line. This option allows to disable that
-limit. Note that some games used this to hide unwanted things, so it is not
-always good to enable this option.
+@@3. "Hor. scale (for low res. games)"
+This one works similarly as the previous setting, but can be used to apply additional
+scaling horizontally, and is used for games which use lower (256 pixel wide) Gen/MD
+resolution.
 
-@@3. "Emulate Z80"
-Enables emulation of Z80 chip, which was mostly used to drive the other sound chips.
-Some games do complex sync with it, so you must enable it even if you don't use
-sound to be able to play them.
+@@3. "Hor. scale (for hi res. games)"
+Same as above, only for higher (320 pixel wide) resolution using games.
 
-@@3. "Emulate YM2612 (FM)"
-This enables emulation of six-channel FM sound synthesizer chip, which was used to
-produce sound effects and music.
+@@3. "Bilinear filtering"
+If this is enabled, PSP hardware will apply bilinear filtering on the resulting image,
+making it smoother, but blurry.
 
-@@3. "Emulate SN76496 (PSG)"
-This enables emulation of PSG (programmable sound generation) sound chip for
-additional effects.
+@@3. "Gamma adjustment"
+Color gamma can be adjusted with this.
 
-Note: if you change sound settings AFTER loading a ROM, you may need to reset
-game to get sound. This is because most games initialize sound chips on
-startup, and this data is lost when sound chips are being enabled/disabled.
+@@3. "Black level"
+This can be used to reduce unwanted "ghosting" effect for dark games, by making
+black pixels brighter. Use in conjunction with "gamma adjustment" for more effect.
 
-@@3. "gzip savestates"
-This will always apply gzip compression on your savestates, allowing you to
-save some space and load/save time.
+@@3. "Wait for vsync"
+Wait for the screen to finish updating before switching to next frame, to avoid tearing.
+There are 3 options:
+* never: don't wait for vsync.
+* sometimes: wait only if emulator is running fast enough.
+* always: always wait (causes emulation slowdown).
 
-@@3. "Don't save last used ROM"
-This will disable writing last used ROM to config on exit (what might cause SD
-card corruption according to DaveC).
+@@3. "Set to unscaled centered"
+Adjust the resizing options to set game image to it's original size.
 
-@@3. "Disable idle loop patching"
-Idle loop patching is used to improve performance, but may cause compatibility
-problems in some rare cases. Try disabling this if your game has problems.
+@@3. "Set to fullscreen"
+Adjust the resizing options to make the game image fullscreen.
 
-@@3. "Disable frame limiter"
-This allows games to run faster then 50/60fps, useful for benchmarking.
 
-#ifdef GP2X
-@@3. "Use ARM940 core for sound"
-F100/F200: This option causes PicoDrive to use ARM940T core (GP2X's second CPU)
-for sound (i.e. to generate YM2612 samples) to improve performance noticeably.
-It also decodes MP3s in Sega/Mega CD mode.
-
-@@3. "RAM overclock"
-This overclocks the GP2X RAM chips for improved performance, but may cause
-instability. Keep it enabled if it doesn't cause problems.
-
-@@3. "MMU hack"
-Makes framebuffer bufferable for improved performance. There are no drawbacks
-so it should be left enabled.
-
-@@3. "SVP dynarec"
-This enables dynamic recompilation for SVP chip emulated for Virtua Racing game,
-what improves it's emulation performance greatly.
 #endif
-
-
 Key configuration
 -----------------
 
@@ -466,12 +481,7 @@ the right Giz ones, which are assigned to them. If you bind 2 different Giz butt
 the right PSP ones, which are assigned to them. If you bind 2 different PSP buttons
 #endif
 to the same action, you will get a combo (which means that you will have to press
-both buttons for that action to happen).
-
-There is also option to enable 6 button pad (will allow you to configure XYZ
-buttons), and an option to set turbo rate (in Hz) for turbo buttons.
-#endif
-#ifndef UIQ
+both buttons for that action to happen.
 
 
 Cheat support
@@ -510,7 +520,6 @@ PATCH FILE: Sonic 2.bin.pat
 
 Put the file into your ROMs directory. Then load the .pat file as you would
 a ROM. Then Cheat Menu Option should appear in main menu.
-#endif
 
 
 What is emulated?
@@ -524,7 +533,7 @@ z80 @ 3.6MHz: yes, CZ80 core
 main 68k @ 7.6MHz: yes, Cyclone core
 z80 @ 3.6MHz: yes, DrZ80 core
 #endif
-VDP: yes, except some quirks and modes not used by games
+VDP: yes, except some quirks not used by games
 YM2612 FM: yes, optimized MAME core
 SN76489 PSG: yes, MAME core
 SVP chip: yes! This is first emu to ever do this.
@@ -549,10 +558,9 @@ Problems / limitations
 #ifdef PSP
 * SVP emulation is terribly slow.
 #endif
-* Various VDP modes and quirks (window bug, scroll size 2, etc.) are not
-  emulated, as very few games use this (if any at all).
+* Various VDP quirks (window bug, scroll size 2, etc.) are not emulated,
+  as very few games use this (if any at all).
 * The emulator is not 100% accurate, so some things may not work as expected.
-* The FM sound core doesn't support all features and has some accuracy issues.
 
 
 Credits
@@ -565,9 +573,9 @@ GP2X, UIQ, PSP, Gizmondo ports, CPU core hacks,
 lots of additional coding (see changelog).
 Homepage: http://notaz.gp2x.de/
 
-fDave
-one who started it all:
-Cyclone 68000 core and PicoDrive itself
+Dave
+Cyclone 68000 core, Pico emulation library
+Homepage: http://www.finalburn.com/
 
 #ifdef PSP
 Chui
@@ -613,17 +621,18 @@ Additional thanks
 * Tasco Deluxe for his reverse engineering work on SVP and some mappers.
 * Bart Trzynadlowski for his SSFII and 68000 docs.
 * Haze for his research (http://haze.mameworld.info).
-* Lordus, Exophase and Rokas for various ideas.
-* Nemesis for his YM2612 research.
 * Mark and Jean-loup for zlib library.
 * ketchupgun for the skin.
 #ifdef GP2X
 * rlyeh and all the other people behind the minimal library.
 * Squidge for his famous squidgehack(tm).
 * Dzz for his ARM940 sample code.
+* GnoStiC & Puck2099 for USB joystick support.
+* Hermes PS2R, god_at_hell for the CpuCtrl library.
 * A_SN for his gamma code.
 * craigix for supplying the GP2X hardware and making this port possible.
 * Alex for the icon.
+* Exophase, Rokas and Lordus for various ideas.
 * All the people from gp32x boards for their support.
 #endif
 #ifdef GIZ
@@ -644,76 +653,10 @@ Additional thanks
 
 Changelog
 ---------
-1.56
-  * Changed sync in Sega CD emulation again. Should fix games that
-    broke after changes in 1.51a.
-  * Fixed default keys rebinding when they shouldn't.
-  * Fixed sram being loaded from wrong game.
-  * Emu should no longer hang shortly after using fast-forward.
-  * Fixed save states sometimes no longer showing up in save state menu.
-  * ARM: some asm code refactoring for slight speed improvement.
-
-1.55
-  + Added Wiz support. Now the same GP2X binary supports F100/F200 and Wiz.
-  * Changed shadow/hilight handling a bit, fixes some effects in Pirates! Gold.
-  * Complete input code rewrite. This fixes some limitations like not allowing
-    to control both players using single input device. It also allows to use
-    more devices (like keyboards) on Linux based devices.
-  * Options menu has been reordered, "restore defaults" option added.
-
-1.51b
-  * Fixed a crash when uncompressed savestate is loaded.
-  * Fixed an idle loop detection related hanging problem.
-  * PSP: fixed another palette related regression.
-  * UIQ3: updated frontend for the latest emu core.
-
-1.51a
-  * Fixed a sync problem between main and sub 68k. Should fix the hanging
-    problem for some games.
-  * ARM: fixed a crash when CD savestate is loaded just after loading ROM.
-
-1.51
-  * Improved bin_to_cso_mp3 tool, it should no longer complain about
-    missing lame.exe even if it's in working dir.
-  * Fixed a regression from 1.50, which caused slowdowns in Final Fight.
-  * Fixed some regressions from 1.50 related to sprite limit and palette
-    handling (caused graphical glitches in some games).
-  + Added ABC turbo actions to key config.
-  * Some other minor adjustments.
-
-1.50
-  + Added some basic support for Sega Pico, a MegaDrive-based toy.
+1.4x
   + Added proper support for cue/bin images, including cdda playback.
-    .cue sheets with iso/cso/mp3/wav files listed in them are now
-    supported too (but 44kHz restriction still applies).
-  + Added bin_to_cso_mp3 tool, based on Exophase's bin_to_iso_ogg.
-    The tool can convert .cue/.bin Sega CD images to .cso/.mp3.
-  * Greatly improved Sega CD load times.
-  * Changed how scheduling between 68k and z80 is handled. Improves
-    performance for some games. Credits to Lordus for the idea.
-  * YM2612 state was not 100% saved, this should be better now.
-  * Improved renderer performance for shadow/hilight mode.
-  * Added a hack for YM2612 frequency overflow issue (bleep noises
-    in Shaq Fu, Spider-Man - The Animated Series (intro music), etc.)
-    Credits to Nemesis @ spritesmind forum. Works only if sound rate
-    is set to 44kHz.
-  + Implemented some sprite rendering improvements, as suggested by
-    Exophase. Games with lots of sprites now perform better.
-  + Added better idle loop detection, based on Lordus' idea again.
-  - "accurate timing" option removed, as disabling it no longer
-    improves performance.
-  - "accurate sprites" was removed too, the new sprite code can
-    properly handle sprite priorities in all cases.
-  * Timers adjusted again.
-  * Improved .smd detection code.
-  * ARM: fixed a bug in DrZ80 core, which could cause problems in
-    some rare cases.
-  * ARM: fixed a problem of occasional clicks on MP3 music start.
-  * Minor general optimizations and menu improvements.
-  * Fixed a bug in Sega CD savestate loader, where the game would
-    sometimes crash after load.
+    .cue sheets with iso/cso/mp3/wav files listed in them are also supported.
   * Fixed a crash of games using eeprom (introduced in 1.40b).
-  * PSP: fixed suspend/resume (hopefully for real).
 
 1.40c
   * Fixed a problem with sound in Marble Madness.
@@ -797,7 +740,7 @@ Changelog
   + Added A r k's usbjoy fix.
   + Added "perfect vsync" option, which adjusts GP2X LCD refresh rate and syncs
     emulation to it to eliminate tearing and ensure smoothest scrolling possible.
-  + Added an option to use A_SN's gamma curve for gamma correction (improves dark
+  + Added an option to use A_SN's camma curve for gamma correction (improves dark
     and bright color display for mk2s).
   * Sometimes stray sounds were played after loading a savestate. Fixed.
   * Fixed a problem where >6MB mp3s were corrupted in memory (sound glitches in
@@ -1007,7 +950,7 @@ Changelog
     use 32-column display (like Shining Force) run ~50% faster.
   + Added new "Alternative renderer", which gives another ~30-45% performance
     increase (in addition to mentioned above), but works only with some games,
-    because it is missing some features (it uses tile-based rendering
+    because it is missing some features (it uses tile-based renderering
     instead of default line-based and disables H-ints).
   + Added "fit2" display mode for all FC gamers. It always uses 208x146 for
     P800 and 208x208 for all other phones.

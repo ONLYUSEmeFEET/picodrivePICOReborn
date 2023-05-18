@@ -6,9 +6,9 @@
 // For commercial use, separate licencing terms must be obtained.
 
 
-#include "../../pico_int.h"
+#include "../../PicoInt.h"
 #include "compiler.h"
-#if defined(__linux__) && defined(ARM)
+#ifdef __GP2X__
 #include <sys/mman.h>
 #endif
 
@@ -45,19 +45,8 @@ static void PicoSVPReset(void)
 }
 
 
-static void PicoSVPLine(void)
+static void PicoSVPLine(int count)
 {
-	int count = 1;
-#if defined(ARM) || defined(PSP)
-	// performance hack
-	static int delay_lines = 0;
-	delay_lines++;
-	if ((Pico.m.scanline&0xf) != 0xf && Pico.m.scanline != 261 && Pico.m.scanline != 311)
-		return;
-	count = delay_lines;
-	delay_lines = 0;
-#endif
-
 #ifndef PSP
 	if ((PicoOpt&POPT_EN_SVP_DRC) && svp_dyn_ready)
 		ssp1601_dyn_run(PicoSVPCycles * count);
@@ -100,7 +89,7 @@ static int PicoSVPDma(unsigned int source, int len, unsigned short **srcp, unsig
 
 void PicoSVPInit(void)
 {
-#if defined(__linux__) && defined(ARM)
+#ifdef __GP2X__
 	int ret;
 	ret = munmap(tcache, SSP_DRC_SIZE);
 	printf("munmap tcache: %i\n", ret);
@@ -110,7 +99,7 @@ void PicoSVPInit(void)
 
 static void PicoSVPShutdown(void)
 {
-#if defined(__linux__) && defined(ARM)
+#ifdef __GP2X__
 	// also unmap tcache
 	PicoSVPInit();
 #endif
@@ -121,7 +110,7 @@ void PicoSVPStartup(void)
 {
 	void *tmp;
 
-	elprintf(EL_STATUS, "SVP startup");
+	elprintf(EL_SVP, "SVP init");
 
 	tmp = realloc(Pico.rom, 0x200000 + sizeof(*svp));
 	if (tmp == NULL)
@@ -135,7 +124,7 @@ void PicoSVPStartup(void)
 	svp = (void *) ((char *)tmp + 0x200000);
 	memset(svp, 0, sizeof(*svp));
 
-#if defined(__linux__) && defined(ARM)
+#ifdef __GP2X__
 	tmp = mmap(tcache, SSP_DRC_SIZE, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_SHARED|MAP_ANONYMOUS, -1, 0);
 	printf("mmap tcache: %p, asked %p\n", tmp, tcache);
 #endif
@@ -150,7 +139,9 @@ void PicoSVPStartup(void)
 #endif
 
 	// init ok, setup hooks..
-	PicoCartMemSetup = PicoSVPMemSetup;
+	PicoRead16Hook = PicoSVPRead16;
+	PicoWrite8Hook = PicoSVPWrite8;
+	PicoWrite16Hook = PicoSVPWrite16;
 	PicoDmaHook = PicoSVPDma;
 	PicoResetHook = PicoSVPReset;
 	PicoLineHook = PicoSVPLine;
