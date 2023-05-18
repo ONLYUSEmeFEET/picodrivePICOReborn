@@ -1,19 +1,29 @@
-/*
- * PicoDrive
- * (c) Copyright Dave, 2004
- * (C) notaz, 2006-2010
- *
- * This work is licensed under the terms of MAME license.
- * See COPYING file in the top-level directory.
- */
+// PicoDrive
+
+// (c) Copyright 2004 Dave, All rights reserved.
+// (c) Copyright 2006-2008 notaz, All rights reserved.
+// Free for non-commercial use.
+
+// For commercial use, separate licencing terms must be obtained.
+
 
 #include "pico_int.h"
 #include "sound/ym2612.h"
 
 struct Pico Pico;
-struct PicoMem PicoMem;
-PicoInterface PicoIn;
+int PicoOpt;     
+int PicoSkipFrame;     // skip rendering frame?
+int PicoPad[2];        // Joypads, format is MXYZ SACB RLDU
+int PicoPadInt[2];     // internal copy
+int PicoAHW;           // active addon hardware: PAHW_*
+int PicoRegionOverride; // override the region detection 0: Auto, 1: Japan NTSC, 2: Japan PAL, 4: US, 8: Europe
+int PicoAutoRgnOrder;
 
+struct PicoSRAM SRam;
+int emustatus;         // rapid_ym2612, multi_ym_updates
+int scanlines_total;
+
+void (*PicoWriteSound)(int len) = NULL; // called at the best time to send sound buffer (PsndOut) to hardware
 void (*PicoResetHook)(void) = NULL;
 void (*PicoLineHook)(void) = NULL;
 
@@ -22,14 +32,8 @@ void PicoInit(void)
 {
   // Blank space for state:
   memset(&Pico,0,sizeof(Pico));
-  memset(&PicoMem,0,sizeof(PicoMem));
-  memset(&PicoIn.pad,0,sizeof(PicoIn.pad));
-  memset(&PicoIn.padInt,0,sizeof(PicoIn.padInt));
-
-  Pico.est.Pico = &Pico;
-  Pico.est.PicoMem_vram = PicoMem.vram;
-  Pico.est.PicoMem_cram = PicoMem.cram;
-  Pico.est.PicoOpt = &PicoIn.opt;
+  memset(&PicoPad,0,sizeof(PicoPad));
+  memset(&PicoPadInt,0,sizeof(PicoPadInt));
 
   // Init CPUs:
   SekInit();
@@ -38,32 +42,26 @@ void PicoInit(void)
   PicoInitMCD();
   PicoSVPInit();
   Pico32xInit();
-
-  PicoDrawInit();
-  PicoDraw2Init();
 }
 
 // to be called once on emu exit
 void PicoExit(void)
 {
-  if (PicoIn.AHW & PAHW_MCD)
+  if (PicoAHW & PAHW_MCD)
     PicoExitMCD();
   PicoCartUnload();
   z80_exit();
 
-  free(Pico.sv.data);
-  Pico.sv.data = NULL;
-  Pico.sv.start = Pico.sv.end = 0;
-  pevt_dump();
+  if (SRam.data)
+    free(SRam.data);
 }
 
 void PicoPower(void)
 {
   Pico.m.frame_count = 0;
-  Pico.t.m68c_cnt = Pico.t.m68c_aim = 0;
 
   // clear all memory of the emulated machine
-  memset(&PicoMem,0,sizeof(PicoMem));
+  memset(&Pico.ram,0,(unsigned int)&Pico.rom-(unsigned int)&Pico.ram);
 
   memset(&Pico.video,0,sizeof(Pico.video));
   memset(&Pico.m,0,sizeof(Pico.m));
@@ -71,18 +69,15 @@ void PicoPower(void)
   Pico.video.pending_ints=0;
   z80_reset();
 
-  // my MD1 VA6 console has this in IO
-  PicoMem.ioports[1] = PicoMem.ioports[2] = PicoMem.ioports[3] = 0xff;
-
   // default VDP register values (based on Fusion)
   Pico.video.reg[0] = Pico.video.reg[1] = 0x04;
   Pico.video.reg[0xc] = 0x81;
   Pico.video.reg[0xf] = 0x02;
 
-  if (PicoIn.AHW & PAHW_MCD)
+  if (PicoAHW & PAHW_MCD)
     PicoPowerMCD();
 
-  if (PicoIn.opt & POPT_EN_32X)
+  if (PicoOpt & POPT_EN_32X)
     PicoPower32x();
 
   PicoReset();
@@ -93,9 +88,9 @@ PICO_INTERNAL void PicoDetectRegion(void)
   int support=0, hw=0, i;
   unsigned char pal=0;
 
-  if (PicoIn.regionOverride)
+  if (PicoRegionOverride)
   {
-    support = PicoIn.regionOverride;
+    support = PicoRegionOverride;
   }
   else
   {
@@ -128,10 +123,10 @@ PICO_INTERNAL void PicoDetectRegion(void)
   }
 
   // auto detection order override
-  if (PicoIn.autoRgnOrder) {
-         if (((PicoIn.autoRgnOrder>>0)&0xf) & support) support = (PicoIn.autoRgnOrder>>0)&0xf;
-    else if (((PicoIn.autoRgnOrder>>4)&0xf) & support) support = (PicoIn.autoRgnOrder>>4)&0xf;
-    else if (((PicoIn.autoRgnOrder>>8)&0xf) & support) support = (PicoIn.autoRgnOrder>>8)&0xf;
+  if (PicoAutoRgnOrder) {
+         if (((PicoAutoRgnOrder>>0)&0xf) & support) support = (PicoAutoRgnOrder>>0)&0xf;
+    else if (((PicoAutoRgnOrder>>4)&0xf) & support) support = (PicoAutoRgnOrder>>4)&0xf;
+    else if (((PicoAutoRgnOrder>>8)&0xf) & support) support = (PicoAutoRgnOrder>>8)&0xf;
   }
 
   // Try to pick the best hardware value for English/50hz:
@@ -150,31 +145,32 @@ int PicoReset(void)
   if (Pico.romsize <= 0)
     return 1;
 
-#if defined(CPU_CMP_R) || defined(CPU_CMP_W) || defined(DRC_CMP)
-  PicoIn.opt |= POPT_DIS_VDP_FIFO|POPT_DIS_IDLE_DET;
-#endif
-
   /* must call now, so that banking is reset, and correct vectors get fetched */
   if (PicoResetHook)
     PicoResetHook();
 
-  memset(&PicoIn.padInt, 0, sizeof(PicoIn.padInt));
+  memset(&PicoPadInt,0,sizeof(PicoPadInt));
+  emustatus = 0;
 
-  if (PicoIn.AHW & PAHW_SMS) {
+  if (PicoAHW & PAHW_SMS) {
     PicoResetMS();
     return 0;
   }
 
   SekReset();
-  // ..but do not reset SekCycle* to not desync with addons
-
   // s68k doesn't have the TAS quirk, so we just globally set normal TAS handler in MCD mode (used by Batman games).
-  SekSetRealTAS(PicoIn.AHW & PAHW_MCD);
+  SekSetRealTAS(PicoAHW & PAHW_MCD);
+  SekCycleCntT=0;
+
+  if (PicoAHW & PAHW_MCD)
+    // needed for MCD to reset properly, probably some bug hides behind this..
+    memset(Pico.ioports,0,sizeof(Pico.ioports));
 
   Pico.m.dirtyPal = 1;
 
   Pico.m.z80_bank68k = 0;
   Pico.m.z80_reset = 1;
+  memset(Pico.zram, 0, sizeof(Pico.zram)); // ??
 
   PicoDetectRegion();
   Pico.video.status = 0x3428 | Pico.m.pal; // 'always set' bits | vblank | collision | pal
@@ -182,63 +178,69 @@ int PicoReset(void)
   PsndReset(); // pal must be known here
 
   // create an empty "dma" to cause 68k exec start at random frame location
-  if (Pico.m.dma_xfers == 0 && !(PicoIn.opt & POPT_DIS_VDP_FIFO))
+  if (Pico.m.dma_xfers == 0 && !(PicoOpt & POPT_DIS_VDP_FIFO))
     Pico.m.dma_xfers = rand() & 0x1fff;
 
   SekFinishIdleDet();
 
-  if (PicoIn.AHW & PAHW_MCD) {
+  if (PicoAHW & PAHW_MCD) {
     PicoResetMCD();
     return 0;
   }
 
   // reinit, so that checksum checks pass
-  if (!(PicoIn.opt & POPT_DIS_IDLE_DET))
+  if (!(PicoOpt & POPT_DIS_IDLE_DET))
     SekInitIdleDet();
 
-  if (PicoIn.opt & POPT_EN_32X)
+  if (PicoOpt & POPT_EN_32X) {
     PicoReset32x();
+    return 0;
+  }
 
   // reset sram state; enable sram access by default if it doesn't overlap with ROM
   Pico.m.sram_reg = 0;
-  if ((Pico.sv.flags & SRF_EEPROM) || Pico.romsize <= Pico.sv.start)
+  if ((SRam.flags & SRF_EEPROM) || Pico.romsize <= SRam.start)
     Pico.m.sram_reg |= SRR_MAPPED;
 
-  if (Pico.sv.flags & SRF_ENABLED)
-    elprintf(EL_STATUS, "sram: %06x - %06x; eeprom: %i", Pico.sv.start, Pico.sv.end,
-      !!(Pico.sv.flags & SRF_EEPROM));
+  if (SRam.flags & SRF_ENABLED)
+    elprintf(EL_STATUS, "sram: %06x - %06x; eeprom: %i", SRam.start, SRam.end,
+      !!(SRam.flags & SRF_EEPROM));
 
   return 0;
 }
 
-// flush config changes before emu loop starts
+// flush cinfig changes before emu loop starts
 void PicoLoopPrepare(void)
 {
-  if (PicoIn.regionOverride)
+  if (PicoRegionOverride)
     // force setting possibly changed..
-    Pico.m.pal = (PicoIn.regionOverride == 2 || PicoIn.regionOverride == 8) ? 1 : 0;
+    Pico.m.pal = (PicoRegionOverride == 2 || PicoRegionOverride == 8) ? 1 : 0;
 
-  Pico.m.dirtyPal = 1;
-  rendstatus_old = -1;
+  // FIXME: PAL has 313 scanlines..
+  scanlines_total = Pico.m.pal ? 312 : 262;
+
+  if (PicoAHW & PAHW_32X)
+    p32x_timers_recalc();
 }
 
-// this table is wrong and should be removed
-// keeping it for now to compensate wrong timing elswhere, mainly for Outrunners
+
+// dma2vram settings are just hacks to unglitch Legend of Galahad (needs <= 104 to work)
+// same for Outrunners (92-121, when active is set to 24)
+// 96 is VR hack
 static const int dma_timings[] = {
-   83, 166,  83,  83, // vblank: 32cell: dma2vram dma2[vs|c]ram vram_fill vram_copy
-  102, 204, 102, 102, // vblank: 40cell:
-    8,  16,   8,   8, // active: 32cell:
-   17,  18,   9,   9  // ...
+  96,  167, 166,  83, // vblank: 32cell: dma2vram dma2[vs|c]ram vram_fill vram_copy
+  102, 205, 204, 102, // vblank: 40cell:
+  16,   16,  15,   8, // active: 32cell:
+  24,   18,  17,   9  // ...
 };
 
 static const int dma_bsycles[] = {
-  (488<<8)/83,  (488<<8)/166, (488<<8)/83,  (488<<8)/83,
-  (488<<8)/102, (488<<8)/204, (488<<8)/102, (488<<8)/102,
-  (488<<8)/8,   (488<<8)/16,  (488<<8)/8,   (488<<8)/8,
-  (488<<8)/9,   (488<<8)/18,  (488<<8)/9,   (488<<8)/9
+  (488<<8)/96,  (488<<8)/167, (488<<8)/166, (488<<8)/83,
+  (488<<8)/102, (488<<8)/205, (488<<8)/204, (488<<8)/102,
+  (488<<8)/16,  (488<<8)/16,  (488<<8)/15,  (488<<8)/8,
+  (488<<8)/24,  (488<<8)/18,  (488<<8)/17,  (488<<8)/9
 };
 
-// grossly inaccurate.. FIXME FIXXXMEE
 PICO_INTERNAL int CheckDMA(void)
 {
   int burn = 0, xfers_can, dma_op = Pico.video.reg[0x17]>>6; // see gens for 00 and 01 modes
@@ -252,79 +254,92 @@ PICO_INTERNAL int CheckDMA(void)
   xfers_can = dma_timings[dma_op];
   if(xfers <= xfers_can)
   {
-    Pico.video.status &= ~SR_DMA;
-    if (!(dma_op & 2))
+    if(dma_op&2) Pico.video.status&=~2; // dma no longer busy
+    else {
       burn = xfers * dma_bsycles[dma_op] >> 8; // have to be approximate because can't afford division..
+    }
     Pico.m.dma_xfers = 0;
   } else {
     if(!(dma_op&2)) burn = 488;
     Pico.m.dma_xfers -= xfers_can;
   }
 
-  elprintf(EL_VDPDMA, "~Dma %i op=%i can=%i burn=%i [%u]",
-    Pico.m.dma_xfers, dma_op1, xfers_can, burn, SekCyclesDone());
-  //dprintf("~aim: %i, cnt: %i", Pico.t.m68c_aim, Pico.t.m68c_cnt);
+  elprintf(EL_VDPDMA, "~Dma %i op=%i can=%i burn=%i [%i]", Pico.m.dma_xfers, dma_op1, xfers_can, burn, SekCyclesDone());
+  //dprintf("~aim: %i, cnt: %i", SekCycleAim, SekCycleCnt);
   return burn;
+}
+
+static __inline void SekRunM68k(int cyc)
+{
+  int cyc_do;
+  SekCycleAim+=cyc;
+  if ((cyc_do=SekCycleAim-SekCycleCnt) <= 0) return;
+#if defined(EMU_CORE_DEBUG)
+  // this means we do run-compare
+  SekCycleCnt+=CM_compareRun(cyc_do, 0);
+#elif defined(EMU_C68K)
+  PicoCpuCM68k.cycles=cyc_do;
+  CycloneRun(&PicoCpuCM68k);
+  SekCycleCnt+=cyc_do-PicoCpuCM68k.cycles;
+#elif defined(EMU_M68K)
+  SekCycleCnt+=m68k_execute(cyc_do);
+#elif defined(EMU_F68K)
+  SekCycleCnt+=fm68k_emulate(cyc_do+1, 0, 0);
+#endif
 }
 
 #include "pico_cmn.c"
 
+int z80stopCycle;
+int z80_cycle_cnt;        /* 'done' z80 cycles before z80_run() */
+int z80_cycle_aim;
+int z80_scanline;
+int z80_scanline_cycles;  /* cycles done until z80_scanline */
+
 /* sync z80 to 68k */
-PICO_INTERNAL void PicoSyncZ80(unsigned int m68k_cycles_done)
+PICO_INTERNAL void PicoSyncZ80(int m68k_cycles_done)
 {
-  int m68k_cnt;
   int cnt;
+  z80_cycle_aim = cycles_68k_to_z80(m68k_cycles_done);
+  cnt = z80_cycle_aim - z80_cycle_cnt;
 
-  m68k_cnt = m68k_cycles_done - Pico.t.m68c_frame_start;
-  Pico.t.z80c_aim = cycles_68k_to_z80(m68k_cnt);
-  cnt = Pico.t.z80c_aim - Pico.t.z80c_cnt;
-
-  pprof_start(z80);
-
-  elprintf(EL_BUSREQ, "z80 sync %i (%u|%u -> %u|%u)", cnt,
-    Pico.t.z80c_cnt, Pico.t.z80c_cnt * 15 / 7 / 488,
-    Pico.t.z80c_aim, Pico.t.z80c_aim * 15 / 7 / 488);
+  elprintf(EL_BUSREQ, "z80 sync %i (%i|%i -> %i|%i)", cnt, z80_cycle_cnt, z80_cycle_cnt / 228,
+    z80_cycle_aim, z80_cycle_aim / 228);
 
   if (cnt > 0)
-    Pico.t.z80c_cnt += z80_run(cnt);
-
-  pprof_end(z80);
+    z80_cycle_cnt += z80_run(cnt);
 }
 
 
 void PicoFrame(void)
 {
-  pprof_start(frame);
-
   Pico.m.frame_count++;
 
-  if (PicoIn.AHW & PAHW_SMS) {
+  if (PicoAHW & PAHW_SMS) {
     PicoFrameMS();
-    goto end;
+    return;
   }
 
-  if (PicoIn.AHW & PAHW_32X) {
-    PicoFrame32x(); // also does MCD+32X
-    goto end;
-  }
-
-  if (PicoIn.AHW & PAHW_MCD) {
+  // TODO: MCD+32X
+  if (PicoAHW & PAHW_MCD) {
     PicoFrameMCD();
-    goto end;
+    return;
+  }
+
+  if (PicoAHW & PAHW_32X) {
+    PicoFrame32x();
+    return;
   }
 
   //if(Pico.video.reg[12]&0x2) Pico.video.status ^= 0x10; // change odd bit in interlace mode
 
   PicoFrameStart();
   PicoFrameHints();
-
-end:
-  pprof_end(frame);
 }
 
 void PicoFrameDrawOnly(void)
 {
-  if (!(PicoIn.AHW & PAHW_SMS)) {
+  if (!(PicoAHW & PAHW_SMS)) {
     PicoFrameStart();
     PicoDrawSync(223, 0);
   } else {
@@ -343,4 +358,6 @@ void PicoGetInternal(pint_t which, pint_ret_t *r)
   }
 }
 
-// vim:ts=2:sw=2:expandtab
+// callback to output message from emu
+void (*PicoMessage)(const char *msg)=NULL;
+

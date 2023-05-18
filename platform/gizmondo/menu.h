@@ -1,10 +1,7 @@
-/*
- * PicoDrive
- * (C) notaz, 2006-2008
- *
- * This work is licensed under the terms of MAME license.
- * See COPYING file in the top-level directory.
- */
+// (c) Copyright 2006,2007 notaz, All rights reserved.
+// Free for non-commercial use.
+
+// For commercial use, separate licencing terms must be obtained.
 
 void menu_loop(void);
 int  menu_loop_tray(void);

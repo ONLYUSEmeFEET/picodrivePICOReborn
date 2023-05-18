@@ -1,22 +1,12 @@
-/*
- * SSP1601 to ARM recompiler
- * (C) notaz, 2008,2009,2010
- *
- * This work is licensed under the terms of MAME license.
- * See COPYING file in the top-level directory.
- */
+// SSP1601 to ARM recompiler
+
+// (c) Copyright 2008, Grazvydas "notaz" Ignotas
+// Free for non-commercial use.
 
 #include "../../pico_int.h"
-#include "../../../cpu/drc/cmn.h"
 #include "compiler.h"
 
-// FIXME: asm has these hardcoded
-#define SSP_BLOCKTAB_ENTS       (0x5090/2)
-#define SSP_BLOCKTAB_IRAM_ONE   (0x800/2) // table entries
-#define SSP_BLOCKTAB_IRAM_ENTS  (15*SSP_BLOCKTAB_IRAM_ONE)
-
-static u32 **ssp_block_table; // [0x5090/2];
-static u32 **ssp_block_table_iram; // [15][0x800/2];
+#define u32 unsigned int
 
 static u32 *tcache_ptr = NULL;
 
@@ -31,15 +21,18 @@ extern ssp1601_t *ssp;
 #define SSP_FLAG_Z (1<<0xd)
 #define SSP_FLAG_N (1<<0xf)
 
-#ifndef __arm__
-//#define DUMP_BLOCK 0x0c9a
+#ifndef ARM
+#define DUMP_BLOCK 0x0c9a
+u32 tcache[SSP_TCACHE_SIZE/4];
+u32 *ssp_block_table[0x5090/2];
+u32 *ssp_block_table_iram[15][0x800/2];
+char ssp_align[SSP_BLOCKTAB_ALIGN_SIZE];
 void ssp_drc_next(void){}
 void ssp_drc_next_patch(void){}
 void ssp_drc_end(void){}
 #endif
 
-#define COUNT_OP
-#include "../../../cpu/drc/emit_arm.c"
+#include "gen_arm.c"
 
 // -----------------------------------------------------
 
@@ -289,11 +282,11 @@ static void tr_flush_dirty_prs(void)
 	int i, ror = 0, reg;
 	int dirty = dirty_regb >> 8;
 	if ((dirty&7) == 7) {
-		emith_move_r_imm(8, known_regs.r[0]|(known_regs.r[1]<<8)|(known_regs.r[2]<<16));
+		emit_mov_const(A_COND_AL, 8, known_regs.r[0]|(known_regs.r[1]<<8)|(known_regs.r[2]<<16));
 		dirty &= ~7;
 	}
 	if ((dirty&0x70) == 0x70) {
-		emith_move_r_imm(9, known_regs.r[4]|(known_regs.r[5]<<8)|(known_regs.r[6]<<16));
+		emit_mov_const(A_COND_AL, 9, known_regs.r[4]|(known_regs.r[5]<<8)|(known_regs.r[6]<<16));
 		dirty &= ~0x70;
 	}
 	/* r0-r7 */
@@ -352,14 +345,14 @@ static void tr_make_dirty_ST(void)
 static void tr_mov16(int r, int val)
 {
 	if (hostreg_r[r] != val) {
-		emith_move_r_imm(r, val);
+		emit_mov_const(A_COND_AL, r, val);
 		hostreg_r[r] = val;
 	}
 }
 
 static void tr_mov16_cond(int cond, int r, int val)
 {
-	emith_op_imm(cond, 0, A_OP_MOV, r, val);
+	emit_mov_const(cond, r, val);
 	hostreg_r[r] = -1;
 }
 
@@ -371,7 +364,7 @@ static void tr_flush_dirty_pmcrs(void)
 
 	if (dirty_regb & KRREG_PMC) {
 		val = known_regs.pmc.v;
-		emith_move_r_imm(1, val);
+		emit_mov_const(A_COND_AL, 1, val);
 		EOP_STR_IMM(1,7,0x400+SSP_PMC*4);
 
 		if (known_regs.emu_status & (SSP_PMC_SET|SSP_PMC_HAVE_ADDR)) {
@@ -384,14 +377,14 @@ static void tr_flush_dirty_pmcrs(void)
 		if (dirty_regb & (1 << (20+i))) {
 			if (val != known_regs.pmac_read[i]) {
 				val = known_regs.pmac_read[i];
-				emith_move_r_imm(1, val);
+				emit_mov_const(A_COND_AL, 1, val);
 			}
 			EOP_STR_IMM(1,7,0x454+i*4); // pmac_read
 		}
 		if (dirty_regb & (1 << (25+i))) {
 			if (val != known_regs.pmac_write[i]) {
 				val = known_regs.pmac_write[i];
-				emith_move_r_imm(1, val);
+				emit_mov_const(A_COND_AL, 1, val);
 			}
 			EOP_STR_IMM(1,7,0x46c+i*4); // pmac_write
 		}
@@ -689,18 +682,6 @@ static int tr_aop_ssp2arm(int op)
 	return 0;
 }
 
-#ifdef __MACH__
-/* spacial version of call for calling C needed on ios, since we use r9.. */
-static void emith_call_c_func(void *target)
-{
-	EOP_STMFD_SP(A_R7M|A_R9M);
-	emith_call(target);
-	EOP_LDMFD_SP(A_R7M|A_R9M);
-}
-#else
-#define emith_call_c_func emith_call
-#endif
-
 // -----------------------------------------------------
 
 //@ r4:  XXYY
@@ -808,7 +789,7 @@ static void tr_PMX_to_r0(int reg)
 		if      ((mode & 0xfff0) == 0x0800)
 		{
 			EOP_LDR_IMM(1,7,0x488);		// rom_ptr
-			emith_move_r_imm(0, (pmcv&0xfffff)<<1);
+			emit_mov_const(A_COND_AL, 0, (pmcv&0xfffff)<<1);
 			EOP_LDRH_REG(0,1,0);		// ldrh r0, [r1, r0]
 			known_regs.pmac_read[reg] += 1;
 		}
@@ -816,7 +797,7 @@ static void tr_PMX_to_r0(int reg)
 		{
 			int inc = get_inc(mode);
 			EOP_LDR_IMM(1,7,0x490);		// dram_ptr
-			emith_move_r_imm(0, (pmcv&0xffff)<<1);
+			emit_mov_const(A_COND_AL, 0, (pmcv&0xffff)<<1);
 			EOP_LDRH_REG(0,1,0);		// ldrh r0, [r1, r0]
 			if (reg == 4 && (pmcv == 0x187f03 || pmcv == 0x187f04)) // wait loop detection
 			{
@@ -851,7 +832,7 @@ static void tr_PMX_to_r0(int reg)
 	tr_flush_dirty_ST();
 	//tr_flush_dirty_pmcrs();
 	tr_mov16(0, reg);
-	emith_call_c_func(ssp_pm_read);
+	emit_call(A_COND_AL, ssp_pm_read);
 	hostreg_clear();
 }
 
@@ -1050,7 +1031,7 @@ static void tr_r0_to_PMX(int reg)
 			int inc = get_inc(mode);
 			if (mode & 0x0400) tr_unhandled();
 			EOP_LDR_IMM(1,7,0x490);		// dram_ptr
-			emith_move_r_imm(2, addr << 1);
+			emit_mov_const(A_COND_AL, 2, addr<<1);
 			EOP_STRH_REG(0,1,2);		// strh r0, [r1, r2]
 			known_regs.pmac_write[reg] += inc;
 		}
@@ -1058,7 +1039,7 @@ static void tr_r0_to_PMX(int reg)
 		{
 			if (mode & 0x0400) tr_unhandled();
 			EOP_LDR_IMM(1,7,0x490);		// dram_ptr
-			emith_move_r_imm(2, addr << 1);
+			emit_mov_const(A_COND_AL, 2, addr<<1);
 			EOP_STRH_REG(0,1,2);		// strh r0, [r1, r2]
 			known_regs.pmac_write[reg] += (addr&1) ? 31 : 1;
 		}
@@ -1066,7 +1047,7 @@ static void tr_r0_to_PMX(int reg)
 		{
 			int inc = get_inc(mode);
 			EOP_LDR_IMM(1,7,0x48c);		// iram_ptr
-			emith_move_r_imm(2, (addr&0x3ff) << 1);
+			emit_mov_const(A_COND_AL, 2, (addr&0x3ff)<<1);
 			EOP_STRH_REG(0,1,2);		// strh r0, [r1, r2]
 			EOP_MOV_IMM(1,0,1);
 			EOP_STR_IMM(1,7,0x494);		// iram_dirty
@@ -1092,7 +1073,7 @@ static void tr_r0_to_PMX(int reg)
 	tr_flush_dirty_ST();
 	//tr_flush_dirty_pmcrs();
 	tr_mov16(1, reg);
-	emith_call_c_func(ssp_pm_write);
+	emit_call(A_COND_AL, ssp_pm_write);
 	hostreg_clear();
 }
 
@@ -1133,7 +1114,7 @@ static void tr_r0_to_PMC(int const_val)
 	{
 		tr_flush_dirty_ST();
 		if (known_regb & KRREG_PMC) {
-			emith_move_r_imm(1, known_regs.pmc.v);
+			emit_mov_const(A_COND_AL, 1, known_regs.pmc.v);
 			EOP_STR_IMM(1,7,0x400+SSP_PMC*4);
 			known_regb &= ~KRREG_PMC;
 			dirty_regb &= ~KRREG_PMC;
@@ -1212,10 +1193,7 @@ static int tr_detect_set_pm(unsigned int op, int *pc, int imm)
 		int reg = is_write ? ((tmpv>>4)&0x7) : (tmpv&0x7);
 		if (reg > 4) tr_unhandled();
 		if ((tmpv & 0x0f) != 0 && (tmpv & 0xf0) != 0) tr_unhandled();
-		if (is_write)
-			known_regs.pmac_write[reg] = pmcv;
-		else
-			known_regs.pmac_read[reg] = pmcv;
+		known_regs.pmac_read[is_write ? reg + 5 : reg] = pmcv;
 		known_regb |= is_write ? (1 << (reg+25)) : (1 << (reg+20));
 		dirty_regb |= is_write ? (1 << (reg+25)) : (1 << (reg+20));
 		known_regs.emu_status &= ~SSP_PMC_SET;
@@ -1685,74 +1663,57 @@ static void emit_block_prologue(void)
 	// check if there are enough cycles..
 	// note: r0 must contain PC of current block
 	EOP_CMP_IMM(11,0,0);			// cmp r11, #0
-	emith_jump_cond(A_COND_LE, ssp_drc_end);
+	emit_jump(A_COND_LE, ssp_drc_end);
 }
 
 /* cond:
  * >0: direct (un)conditional jump
  * <0: indirect jump
  */
-static void *emit_block_epilogue(int cycles, int cond, int pc, int end_pc)
+static void emit_block_epilogue(int cycles, int cond, int pc, int end_pc)
 {
-	void *end_ptr = NULL;
-
-	if (cycles > 0xff) {
-		elprintf(EL_ANOMALY, "large cycle count: %i\n", cycles);
-		cycles = 0xff;
-	}
+	if (cycles > 0xff) { elprintf(EL_ANOMALY, "large cycle count: %i\n", cycles); cycles = 0xff; }
 	EOP_SUB_IMM(11,11,0,cycles);		// sub r11, r11, #cycles
 
 	if (cond < 0 || (end_pc >= 0x400 && pc < 0x400)) {
 		// indirect jump, or rom -> iram jump, must use dispatcher
-		emith_jump(ssp_drc_next);
+		emit_jump(A_COND_AL, ssp_drc_next);
 	}
 	else if (cond == A_COND_AL) {
-		u32 *target = (pc < 0x400) ?
-			ssp_block_table_iram[ssp->drc.iram_context * SSP_BLOCKTAB_IRAM_ONE + pc] :
-			ssp_block_table[pc];
+		u32 *target = (pc < 0x400) ? ssp_block_table_iram[ssp->drc.iram_context][pc] : ssp_block_table[pc];
 		if (target != NULL)
-			emith_jump(target);
+			emit_jump(A_COND_AL, target);
 		else {
-			int ops = emith_jump(ssp_drc_next);
-			end_ptr = tcache_ptr;
+			int ops = emit_jump(A_COND_AL, ssp_drc_next);
 			// cause the next block to be emitted over jump instruction
 			tcache_ptr -= ops;
 		}
 	}
 	else {
-		u32 *target1 = (pc     < 0x400) ?
-			ssp_block_table_iram[ssp->drc.iram_context * SSP_BLOCKTAB_IRAM_ONE + pc] :
-			ssp_block_table[pc];
-		u32 *target2 = (end_pc < 0x400) ?
-			ssp_block_table_iram[ssp->drc.iram_context * SSP_BLOCKTAB_IRAM_ONE + end_pc] :
-			ssp_block_table[end_pc];
+		u32 *target1 = (pc     < 0x400) ? ssp_block_table_iram[ssp->drc.iram_context][pc] : ssp_block_table[pc];
+		u32 *target2 = (end_pc < 0x400) ? ssp_block_table_iram[ssp->drc.iram_context][end_pc] : ssp_block_table[end_pc];
 		if (target1 != NULL)
-		     emith_jump_cond(cond, target1);
+		     emit_jump(cond, target1);
 		if (target2 != NULL)
-		     emith_jump_cond(tr_neg_cond(cond), target2); // neg_cond, to be able to swap jumps if needed
+		     emit_jump(tr_neg_cond(cond), target2); // neg_cond, to be able to swap jumps if needed
 #ifndef __EPOC32__
 		// emit patchable branches
 		if (target1 == NULL)
-			emith_call_cond(cond, ssp_drc_next_patch);
+			emit_call(cond, ssp_drc_next_patch);
 		if (target2 == NULL)
-			emith_call_cond(tr_neg_cond(cond), ssp_drc_next_patch);
+			emit_call(tr_neg_cond(cond), ssp_drc_next_patch);
 #else
 		// won't patch indirect jumps
 		if (target1 == NULL || target2 == NULL)
-			emith_jump(ssp_drc_next);
+			emit_jump(A_COND_AL, ssp_drc_next);
 #endif
 	}
-
-	if (end_ptr == NULL)
-		end_ptr = tcache_ptr;
-
-	return end_ptr;
 }
 
 void *ssp_translate_block(int pc)
 {
 	unsigned int op, op1, imm, ccount = 0;
-	unsigned int *block_start, *block_end;
+	unsigned int *block_start;
 	int ret, end_cond = A_COND_AL, jump_pc = -1;
 
 	//printf("translate %04x -> %04x\n", pc<<1, (tcache_ptr-tcache)<<2);
@@ -1788,15 +1749,15 @@ void *ssp_translate_block(int pc)
 	if (ccount >= 100) {
 		end_cond = A_COND_AL;
 		jump_pc = pc;
-		emith_move_r_imm(0, pc);
+		emit_mov_const(A_COND_AL, 0, pc);
 	}
 
 	tr_flush_dirty_prs();
 	tr_flush_dirty_ST();
 	tr_flush_dirty_pmcrs();
-	block_end = emit_block_epilogue(ccount, end_cond, jump_pc, pc);
+	emit_block_epilogue(ccount, end_cond, jump_pc, pc);
 
-	if (tcache_ptr - (u32 *)tcache > DRC_TCACHE_SIZE/4) {
+	if (tcache_ptr - tcache > SSP_TCACHE_SIZE/4) {
 		elprintf(EL_ANOMALY|EL_STATUS|EL_SVP, "tcache overflow!\n");
 		fflush(stdout);
 		exit(1);
@@ -1817,9 +1778,7 @@ void *ssp_translate_block(int pc)
 	exit(0);
 #endif
 
-#ifdef __arm__
-	cache_flush_d_inval_i(block_start, block_end);
-#endif
+	handle_caches();
 
 	return block_start;
 }
@@ -1834,44 +1793,26 @@ static void ssp1601_state_load(void)
 	ssp->drc.iram_context = 0;
 }
 
-void ssp1601_dyn_exit(void)
-{
-	free(ssp_block_table);
-	free(ssp_block_table_iram);
-	ssp_block_table = ssp_block_table_iram = NULL;
-
-	drc_cmn_cleanup();
-}
-
 int ssp1601_dyn_startup(void)
 {
-	drc_cmn_init();
-
-	ssp_block_table = calloc(sizeof(ssp_block_table[0]), SSP_BLOCKTAB_ENTS);
-	if (ssp_block_table == NULL)
-		return -1;
-	ssp_block_table_iram = calloc(sizeof(ssp_block_table_iram[0]), SSP_BLOCKTAB_IRAM_ENTS);
-	if (ssp_block_table_iram == NULL) {
-		free(ssp_block_table);
-		return -1;
-	}
-
-	memset(tcache, 0, DRC_TCACHE_SIZE);
-	tcache_ptr = (void *)tcache;
+	memset(tcache, 0, SSP_TCACHE_SIZE);
+	memset(ssp_block_table, 0, sizeof(ssp_block_table));
+	memset(ssp_block_table_iram, 0, sizeof(ssp_block_table_iram));
+	tcache_ptr = tcache;
 
 	PicoLoadStateHook = ssp1601_state_load;
 
 	n_in_ops = 0;
-#ifdef __arm__
+#ifdef ARM
 	// hle'd blocks
 	ssp_block_table[0x800/2] = (void *) ssp_hle_800;
 	ssp_block_table[0x902/2] = (void *) ssp_hle_902;
-	ssp_block_table_iram[ 7 * SSP_BLOCKTAB_IRAM_ONE + 0x030/2] = (void *) ssp_hle_07_030;
-	ssp_block_table_iram[ 7 * SSP_BLOCKTAB_IRAM_ONE + 0x036/2] = (void *) ssp_hle_07_036;
-	ssp_block_table_iram[ 7 * SSP_BLOCKTAB_IRAM_ONE + 0x6d6/2] = (void *) ssp_hle_07_6d6;
-	ssp_block_table_iram[11 * SSP_BLOCKTAB_IRAM_ONE + 0x12c/2] = (void *) ssp_hle_11_12c;
-	ssp_block_table_iram[11 * SSP_BLOCKTAB_IRAM_ONE + 0x384/2] = (void *) ssp_hle_11_384;
-	ssp_block_table_iram[11 * SSP_BLOCKTAB_IRAM_ONE + 0x38a/2] = (void *) ssp_hle_11_38a;
+	ssp_block_table_iram[ 7][0x030/2] = (void *) ssp_hle_07_030;
+	ssp_block_table_iram[ 7][0x036/2] = (void *) ssp_hle_07_036;
+	ssp_block_table_iram[ 7][0x6d6/2] = (void *) ssp_hle_07_6d6;
+	ssp_block_table_iram[11][0x12c/2] = (void *) ssp_hle_11_12c;
+	ssp_block_table_iram[11][0x384/2] = (void *) ssp_hle_11_384;
+	ssp_block_table_iram[11][0x38a/2] = (void *) ssp_hle_11_38a;
 #endif
 
 	return 0;
@@ -1902,8 +1843,8 @@ void ssp1601_dyn_run(int cycles)
 #ifdef DUMP_BLOCK
 	ssp_translate_block(DUMP_BLOCK >> 1);
 #endif
-#ifdef __arm__
-	ssp_drc_entry(ssp, cycles);
+#ifdef ARM
+	ssp_drc_entry(cycles);
 #endif
 }
 

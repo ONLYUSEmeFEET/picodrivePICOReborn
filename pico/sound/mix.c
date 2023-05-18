@@ -1,10 +1,5 @@
-/*
- * some code for sample mixing
- * (C) notaz, 2006,2007
- *
- * This work is licensed under the terms of MAME license.
- * See COPYING file in the top-level directory.
- */
+// some code for sample mixing
+// (c) Copyright 2006-2007, Grazvydas "notaz" Ignotas
 
 #define MAXOUT		(+32767)
 #define MINOUT		(-32768)

@@ -12,13 +12,14 @@
       .global DrZ80Ver
 
       .equiv INTERRUPT_MODE,         0	;@0 = Use internal int handler, 1 = Use Mames int handler
-      .equiv FAST_Z80SP,             0	;@0 = Use mem functions for stack pointer, 1 = Use direct mem pointer
+      .equiv FAST_Z80SP,             1	;@0 = Use mem functions for stack pointer, 1 = Use direct mem pointer
       .equiv UPDATE_CONTEXT,         0
       .equiv DRZ80_XMAP,             1
       .equiv DRZ80_XMAP_MORE_INLINE, 1
 
 .if DRZ80_XMAP
       .equ Z80_MEM_SHIFT, 13
+      ;@ note: stack is locked in single bank that z80sp_base points to
 .endif
 
 .if INTERRUPT_MODE
@@ -97,7 +98,6 @@ DrZ80Ver: .long 0x0001
 	.equ Z80_IF1, 1<<0
 	.equ Z80_IF2, 1<<1
 	.equ Z80_HALT, 1<<2
-	.equ Z80_NMI, 1<<3
 
 ;@---------------------------------------
 
@@ -206,32 +206,12 @@ z80_xmap_rebase_pc:
     bxcc lr
 
 z80_bad_jump:
-    stmfd sp!,{r3,r12,lr}
-    mov lr,pc
-    ldr pc,[cpucontext,#z80_rebasePC]
+    ldr r0,[cpucontext,#z80_read8]
+    ldr r0,[r0]
+    str r0,[cpucontext,#z80pc_base]
     mov z80pc,r0
-    ldmfd sp!,{r3,r12,pc}
-
-.if FAST_Z80SP
-z80_xmap_rebase_sp:
-    ldr r1,[cpucontext,#z80_read8]
-    sub r2,r0,#1
-    mov r2,r2,lsl #16
-    mov r2,r2,lsr #(Z80_MEM_SHIFT+16)
-    ldr r1,[r1,r2,lsl #2]
-    movs r1,r1,lsl #1
-    strcc r1,[cpucontext,#z80sp_base]
-    addcc z80sp,r1,r0
-    bxcc lr
-
-    stmfd sp!,{r3,r12,lr}
-    mov lr,pc
-    ldr pc,[cpucontext,#z80_rebaseSP]
-    mov z80sp,r0
-    ldmfd sp!,{r3,r12,pc}
-.endif @ FAST_Z80SP
- 
-.endif @ DRZ80_XMAP
+    bx lr
+.endif
 
 
 .macro fetch cycs
@@ -387,13 +367,15 @@ z80_xmap_rebase_sp:
      str z80pc,[cpucontext,#z80pc_pointer]
 .endif
 .if DRZ80_XMAP
-    bl z80_xmap_rebase_sp
+    ;@ XXX: SP is locked to single back z80sp_base points to.
+    ldr r1,[cpucontext,#z80sp_base]
+    bic r0,r0,#0x7f<<Z80_MEM_SHIFT
+    add r0,r1,r0
 .else
 	stmfd sp!,{r3,r12}
 	mov lr,pc
 	ldr pc,[cpucontext,#z80_rebaseSP]		;@ external function must rebase sp
 	ldmfd sp!,{r3,r12}
-	mov z80sp,r0
 .endif
 .endm
 ;@----------------------------------------------------------------------------
@@ -1362,11 +1344,9 @@ DrZ80Run:
 
 .if INTERRUPT_MODE == 0
 	;@ check ints
-	tst r0,#(Z80_NMI<<8)
-	blne DoNMI
 	tst r0,#0xff
 	movne r0,r0,lsr #8
-	tstne r0,#Z80_IF1
+	tstne r0,#1
 	blne DoInterrupt
 .endif
 
@@ -1519,36 +1499,6 @@ DoInterrupt_end:
 	ldmfd sp!,{r3,r12}
 	ldmfd sp!,{pc} ;@ return
 .endif
-
-DoNMI:
-	stmfd sp!,{lr}
-
-	bic r0,r0,#((Z80_NMI|Z80_HALT|Z80_IF1)<<8)
-	strh r0,[cpucontext,#z80irq] @ 0x4C, irq and IFF bits
-
-	;@ push pc on stack
-	ldr r0,[cpucontext,#z80pc_base]
-	sub r2,z80pc,r0
-	opPUSHareg r2
-
-	;@ read new pc from vector address
-.if UPDATE_CONTEXT
-	str z80pc,[cpucontext,#z80pc_pointer]
-.endif
-	mov r0,#0x66
-.if DRZ80_XMAP
-	rebasepc
-.else
-	stmfd sp!,{r3,r12}
-	mov lr,pc
-	ldr pc,[cpucontext,#z80_rebasePC] ;@ r0=new pc - external function sets z80pc_base and returns new z80pc in r0
-	ldmfd sp!,{r3,r12}
-	mov z80pc,r0	
-.endif
-	ldrh r0,[cpucontext,#z80irq] @ 0x4C, irq and IFF bits
-	eatcycles 11
-	ldmfd sp!,{pc}
-
 
 .data
 .align 4
@@ -4296,12 +4246,10 @@ opcode_0_7:
 	fetch 4
 ;@EX AF,AF'
 opcode_0_8:
-	ldr r0,[cpucontext,#z80a2]
-	ldr r1,[cpucontext,#z80f2]
-	str z80a,[cpucontext,#z80a2]
-	str z80f,[cpucontext,#z80f2]
-	mov z80a,r0
-	mov z80f,r1
+	add r1,cpucontext,#z80a2
+	swp z80a,z80a,[r1]
+	add r1,cpucontext,#z80f2
+	swp z80f,z80f,[r1]
 	fetch 4
 ;@ADD HL,BC
 opcode_0_9:
@@ -4544,6 +4492,7 @@ opcode_3_1:
 .if FAST_Z80SP
 	orr r0,r0,r1, lsl #8
 	rebasesp
+	mov z80sp,r0
 .else
 	orr z80sp,r0,r1, lsl #8
 .endif
@@ -5340,15 +5289,12 @@ opcode_D_8:
 	fetch 5
 ;@EXX
 opcode_D_9:
-	ldr r0,[cpucontext,#z80bc2]
-	ldr r1,[cpucontext,#z80de2]
-	ldr r2,[cpucontext,#z80hl2]
-	str z80bc,[cpucontext,#z80bc2]
-	str z80de,[cpucontext,#z80de2]
-	str z80hl,[cpucontext,#z80hl2]
-	mov z80bc,r0
-	mov z80de,r1
-	mov z80hl,r2
+	add r1,cpucontext,#z80bc2
+	swp z80bc,z80bc,[r1]
+	add r1,cpucontext,#z80de2
+	swp z80de,z80de,[r1]
+	add r1,cpucontext,#z80hl2
+	swp z80hl,z80hl,[r1]
 	fetch 4
 ;@JP C,$+3
 opcode_D_A:
@@ -5621,6 +5567,7 @@ opcode_F_9:
 .if FAST_Z80SP
 	mov r0,z80hl, lsr #16
 	rebasesp
+	mov z80sp,r0
 .else
 	mov z80sp,z80hl, lsr #16
 .endif
@@ -5655,7 +5602,7 @@ ei_return:
 	;@ check ints
 	tst r0,#0xff
 	movne r0,r0,lsr #8
-	tstne r0,#Z80_IF1
+	tstne r0,#1
 	blne DoInterrupt
 
 	;@ continue
@@ -7486,6 +7433,7 @@ opcode_DD_F9:
 .if FAST_Z80SP
 	ldrh r0,[z80xx,#2]
 	rebasesp
+	mov z80sp,r0
 .else
 	ldrh z80sp,[z80xx,#2]
 .endif
@@ -7823,9 +7771,8 @@ opcode_ED_7B:
 	readmem16
 .if FAST_Z80SP
 	rebasesp
-.else
-	mov z80sp,r0
 .endif
+	mov z80sp,r0
 	fetch 20
 ;@LDI
 opcode_ED_A0:

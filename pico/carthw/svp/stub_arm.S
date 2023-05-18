@@ -1,16 +1,48 @@
-@*
-@* Compiler helper functions and some SVP HLE code
-@* (C) notaz, 2008,2009
-@*
-@* This work is licensed under the terms of MAME license.
-@* See COPYING file in the top-level directory.
-@*
+@ vim:filetype=armasm
 
-#include "../../arm_features.h"
+@ Compiler helper functions and some SVP HLE code
 
-.syntax unified
+@ (c) Copyright 2008, Grazvydas "notaz" Ignotas
+@ Free for non-commercial use.
+
+.if 0
+#include "compiler.h"
+.endif
+
+.global tcache
+.global ssp_block_table
+.global ssp_block_table_iram
+
+.global ssp_drc_entry
+.global ssp_drc_next
+.global ssp_drc_next_patch
+.global ssp_drc_end
+.global ssp_hle_800
+.global ssp_hle_902
+.global ssp_hle_07_030
+.global ssp_hle_07_036
+.global ssp_hle_07_6d6
+.global ssp_hle_11_12c
+.global ssp_hle_11_384
+.global ssp_hle_11_38a
+
+@ translation cache buffer + pointer table
+.data
+.align 12 @ 4096
+@.size tcache, SSP_TCACHE_SIZE
+@.size ssp_block_table, SSP_BLOCKTAB_SIZE
+@.size ssp_block_table_iram, SSP_BLOCKTAB_IRAM_SIZE
+tcache:
+ .space SSP_TCACHE_SIZE
+ssp_block_table:
+ .space SSP_BLOCKTAB_SIZE
+ssp_block_table_iram:
+ .space SSP_BLOCKTAB_IRAM_SIZE
+ .space SSP_BLOCKTAB_ALIGN_SIZE
+
 .text
 .align 2
+
 
 @       SSP_GR0, SSP_X,     SSP_Y,   SSP_A,
 @       SSP_ST,  SSP_STACK, SSP_PC,  SSP_P,
@@ -115,11 +147,12 @@
 .endm @ ssp_drc_do_next
 
 
-FUNCTION(ssp_drc_entry):
+ssp_drc_entry:
     stmfd   sp!, {r4-r11, lr}
-    mov     r7, r0                      @ ssp
-    mov     r11, r1
+    mov     r11, r0
 ssp_regfile_load:
+    ldr     r7, =ssp
+    ldr     r7, [r7]
     add     r2, r7, #0x400
     add     r2, r2, #4
     ldmia   r2, {r3,r4,r5,r6,r8}
@@ -144,11 +177,11 @@ ssp_regfile_load:
     mov     r0, r0, lsr #16
 
 
-FUNCTION(ssp_drc_next):
+ssp_drc_next:
     ssp_drc_do_next 0
 
 
-FUNCTION(ssp_drc_next_patch):
+ssp_drc_next_patch:
     ssp_drc_do_next 1
 
 ssp_drc_do_patch:
@@ -186,7 +219,7 @@ ssp_drc_dp_end:
     bx      r2
 
 
-FUNCTION(ssp_drc_end):
+ssp_drc_end:
     mov     r0, r0, lsl #16
     str     r0, [r7, #(SSP_OFFS_GR+SSP_PC*4)]
 
@@ -198,7 +231,7 @@ ssp_regfile_store:
     mov     r9, r6, lsr #13
     and     r9, r9, #(7<<16)            @ STACK
     mov     r3, r6, lsl #28
-    msr     cpsr_f, r3                  @ to to ARM PSR
+    msr     cpsr_flg, r3                @ to to ARM PSR
     and     r6, r6, #0x670
     mov     r6, r6, lsl #12
     orrmi   r6, r6, #0x80000000         @ N
@@ -220,7 +253,7 @@ ssp_regfile_store:
 @ ld      A, PM0
 @ andi    2
 @ bra     z=1, gloc_0800
-FUNCTION(ssp_hle_800):
+ssp_hle_800:
     ldr     r0, [r7, #(SSP_OFFS_GR+SSP_PM0*4)]
     ldr     r1, [r7, #SSP_OFFS_EMUSTAT]
     tst     r0, #0x20000
@@ -247,7 +280,7 @@ FUNCTION(ssp_hle_800):
     ldrh    r0, [r1]
 .endm
 
-FUNCTION(ssp_hle_902):
+ssp_hle_902:
     cmp     r11, #0
     ble     ssp_drc_end
 
@@ -281,8 +314,8 @@ ssp_hle_902_loop:
     bgt     ssp_hle_902_loop
 
     tst     r12, #1
-    ldrhne  r0, [r2], #2
-    strhne  r0, [r3], #2
+    ldrneh  r0, [r2], #2
+    strneh  r0, [r3], #2
 
     ldr     r0, [r7, #SSP_OFFS_IRAM_ROM]
     add     r1, r7, #0x200
@@ -320,7 +353,7 @@ ssp_hle_902_loop:
     add     r8, r8, #(1<<24)
 .endm
 
-FUNCTION(ssp_hle_11_12c):
+ssp_hle_11_12c:
     cmp     r11, #0
     ble     ssp_drc_end
 
@@ -357,11 +390,11 @@ FUNCTION(ssp_hle_11_12c):
     b       ssp_drc_next
 
 
-FUNCTION(ssp_hle_11_384):
+ssp_hle_11_384:
     mov     r3, #2
     b       ssp_hle_11_38x
 
-FUNCTION(ssp_hle_11_38a):
+ssp_hle_11_38a:
     mov     r3, #3		@ r5
 
 ssp_hle_11_38x:
@@ -409,7 +442,7 @@ ssp_hle_11_38x_loop:
     b       ssp_drc_next
 
 
-FUNCTION(ssp_hle_07_6d6):
+ssp_hle_07_6d6:
     cmp     r11, #0
     ble     ssp_drc_end
 
@@ -445,14 +478,14 @@ ssp_hle_07_6d6_end:
     b       ssp_drc_next
 
 
-FUNCTION(ssp_hle_07_030):
+ssp_hle_07_030:
     ldrh    r0, [r7]
     mov     r0, r0, lsl #4
     orr     r0, r0, r0, lsr #16
     strh    r0, [r7]
     sub     r11,r11,#3
 
-FUNCTION(ssp_hle_07_036):
+ssp_hle_07_036:
     ldr     r1, [r7, #0x1e0]	@ F1h F0h
     rsb     r5, r1, r1, lsr #16
     mov     r5, r5, lsl #16	@ AL not needed
@@ -501,7 +534,7 @@ FUNCTION(ssp_hle_07_036):
     mov     r12,    #0x4000
     orr     r12,r12,#0x0018
     subs    r12,r3, r12
-    subsne  r12,r12,#0x0400
+    subnes  r12,r12,#0x0400
     blne    tr_unhandled
 
     orr     r2, r2, r2, lsl #16
@@ -510,7 +543,7 @@ FUNCTION(ssp_hle_07_036):
 
 hle_07_036_no_ovrwr:
     tst     r1, #2
-    strhne  r2, [r1], #0x3e	@ align
+    strneh  r2, [r1], #0x3e	@ align
     subne   r0, r0, #1
     subs    r0, r0, #4
     blt     hle_07_036_l2
@@ -525,7 +558,7 @@ hle_07_036_l2:
     tst     r0, #2
     strne   r2, [r1], #0x40
     tst     r0, #1
-    strhne  r2, [r1], #2
+    strneh  r2, [r1], #2
     b       hle_07_036_end_copy
 
 hle_07_036_ovrwr:
@@ -562,10 +595,10 @@ hle_07_036_ol1:
 
 hle_07_036_ol2:
     tst     r0, #1
-    ldrhne  r3, [r1]
+    ldrneh  r3, [r1]
     andne   r3, r3, r12
     orrne   r3, r3, r2
-    strhne  r3, [r1], #2
+    strneh  r3, [r1], #2
 
 hle_07_036_end_copy:
     ldr     r2, [r7, #SSP_OFFS_DRAM]
@@ -605,23 +638,3 @@ hle_07_036_ending2:
     mov     r0, #0x87
     b       ssp_drc_next	@ let the dispatcher finish this
 
-
-@ ios stuff - preserving r9 on external calls
-#ifdef __MACH__
-
-#define APPLE_WRAP(f) \
-  f:; \
-  push {r9,lr}; \
-  bl _##f; \
-  pop {r9,pc}
-
-APPLE_WRAP(cache_flush_d_inval_i)
-APPLE_WRAP(ssp_get_iram_context)
-APPLE_WRAP(ssp_pm_read)
-APPLE_WRAP(ssp_pm_write)
-APPLE_WRAP(ssp_translate_block)
-APPLE_WRAP(tr_unhandled)
-
-#endif
-
-@ vim:filetype=armasm

@@ -1,68 +1,52 @@
-/*
- * PicoDrive
- * (C) notaz, 2007-2010
- *
- * This work is licensed under the terms of MAME license.
- * See COPYING file in the top-level directory.
- */
+// (c) Copyright 2006-2009 notaz, All rights reserved.
+// Free for non-commercial use.
+
+// For commercial use, separate licencing terms must be obtained.
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <stdarg.h>
-#ifdef __GP2X__
+#ifndef NO_SYNC
 #include <unistd.h>
 #endif
 
-#include "../libpicofe/posix.h"
-#include "../libpicofe/input.h"
-#include "../libpicofe/fonts.h"
-#include "../libpicofe/sndout.h"
-#include "../libpicofe/lprintf.h"
-#include "../libpicofe/plat.h"
 #include "emu.h"
-#include "input_pico.h"
-#include "menu_pico.h"
-#include "config_file.h"
+#include "menu.h"
+#include "fonts.h"
+#include "lprintf.h"
+#include "config.h"
+#include "plat.h"
+#include "input.h"
+#include "posix.h"
 
 #include <pico/pico_int.h>
 #include <pico/patch.h>
+#include <pico/cd/cue.h>
 
-#if defined(__GNUC__) && __GNUC__ >= 7
-#pragma GCC diagnostic ignored "-Wformat-truncation"
-#endif
-
-#ifndef _WIN32
-#define PATH_SEP      "/"
-#define PATH_SEP_C    '/'
-#else
-#define PATH_SEP      "\\"
-#define PATH_SEP_C    '\\'
-#endif
 
 #define STATUS_MSG_TIMEOUT 2000
 
 void *g_screen_ptr;
 
-int g_screen_width  = 320;
-int g_screen_height = 240;
-int g_screen_ppitch = 320; // pitch in pixels
+#if !SCREEN_SIZE_FIXED
+int g_screen_width  = SCREEN_WIDTH;
+int g_screen_height = SCREEN_HEIGHT;
+#endif
 
-const char *PicoConfigFile = "config2.cfg";
+char *PicoConfigFile = "config.cfg";
 currentConfig_t currentConfig, defaultConfig;
 int state_slot = 0;
 int config_slot = 0, config_slot_current = 0;
 int pico_pen_x = 320/2, pico_pen_y = 240/2;
-int pico_inp_mode;
-int flip_after_sync;
+int pico_inp_mode = 0;
 int engineState = PGS_Menu;
-
-static short __attribute__((aligned(4))) sndBuffer[2*44100/50];
 
 /* tmp buff to reduce stack usage for plats with small stack */
 static char static_buff[512];
-const char *rom_fname_reload;
+/* TODO: len checking */
+char rom_fname_reload[512];
 char rom_fname_loaded[512];
+int rom_loaded = 0;
 int reset_timing = 0;
 static unsigned int notice_msg_time;	/* when started showing */
 static char noticeMsg[40];
@@ -108,36 +92,6 @@ static void get_ext(const char *file, char *ext)
 	strlwr_(ext);
 }
 
-static void fname_ext(char *dst, int dstlen, const char *prefix, const char *ext, const char *fname)
-{
-	int prefix_len = 0;
-	const char *p;
-
-	*dst = 0;
-	if (prefix) {
-		int len = plat_get_root_dir(dst, dstlen);
-		strcpy(dst + len, prefix);
-		prefix_len = len + strlen(prefix);
-	}
-
-	p = fname + strlen(fname) - 1;
-	for (; p >= fname && *p != PATH_SEP_C; p--)
-		;
-	p++;
-	strncpy(dst + prefix_len, p, dstlen - prefix_len - 1);
-
-	dst[dstlen - 8] = 0;
-	if (dst[strlen(dst) - 4] == '.')
-		dst[strlen(dst) - 4] = 0;
-	if (ext)
-		strcat(dst, ext);
-}
-
-static void romfname_ext(char *dst, int dstlen, const char *prefix, const char *ext)
-{
-	fname_ext(dst, dstlen, prefix, ext, rom_fname_loaded);
-}
-
 void emu_status_msg(const char *format, ...)
 {
 	va_list vl;
@@ -155,40 +109,23 @@ void emu_status_msg(const char *format, ...)
 	notice_msg_time = plat_get_ticks_ms();
 }
 
-static const char * const biosfiles_us[] = {
-	"us_scd2_9306", "SegaCDBIOS9303", "us_scd1_9210", "bios_CD_U"
-};
-static const char * const biosfiles_eu[] = {
-	"eu_mcd2_9306", "eu_mcd2_9303", "eu_mcd1_9210", "bios_CD_E"
-};
-static const char * const biosfiles_jp[] = {
-	"jp_mcd2_921222", "jp_mcd1_9112", "jp_mcd1_9111", "bios_CD_J"
-};
+static const char * const biosfiles_us[] = { "us_scd1_9210", "us_scd2_9306", "SegaCDBIOS9303" };
+static const char * const biosfiles_eu[] = { "eu_mcd1_9210", "eu_mcd2_9306", "eu_mcd2_9303"   };
+static const char * const biosfiles_jp[] = { "jp_mcd1_9112", "jp_mcd1_9111" };
 
-static const char *find_bios(int *region, const char *cd_fname)
+static int find_bios(int region, char **bios_file)
 {
 	int i, count;
 	const char * const *files;
 	FILE *f = NULL;
-	int ret;
 
-	// we need to have config loaded at this point
-	ret = emu_read_config(cd_fname, 0);
-	if (!ret) emu_read_config(NULL, 0);
-
-	if (PicoIn.regionOverride) {
-		*region = PicoIn.regionOverride;
-		lprintf("override region to %s\n", *region != 4 ?
-			(*region == 8 ? "EU" : "JAP") : "USA");
-	}
-
-	if (*region == 4) { // US
+	if (region == 4) { // US
 		files = biosfiles_us;
 		count = sizeof(biosfiles_us) / sizeof(char *);
-	} else if (*region == 8) { // EU
+	} else if (region == 8) { // EU
 		files = biosfiles_eu;
 		count = sizeof(biosfiles_eu) / sizeof(char *);
-	} else if (*region == 1 || *region == 2) {
+	} else if (region == 1 || region == 2) {
 		files = biosfiles_jp;
 		count = sizeof(biosfiles_jp) / sizeof(char *);
 	} else {
@@ -211,12 +148,14 @@ static const char *find_bios(int *region, const char *cd_fname)
 	if (f) {
 		lprintf("using bios: %s\n", static_buff);
 		fclose(f);
-		return static_buff;
+		if (bios_file)
+			*bios_file = static_buff;
+		return 1;
 	} else {
 		sprintf(static_buff, "no %s BIOS files found, read docs",
-			*region != 4 ? (*region == 8 ? "EU" : "JAP") : "USA");
-		menu_update_msg(static_buff);
-		return NULL;
+			region != 4 ? (region == 8 ? "EU" : "JAP") : "USA");
+		me_update_msg(static_buff);
+		return 0;
 	}
 }
 
@@ -234,6 +173,166 @@ static int emu_isBios(const char *name)
 	return 0;
 }
 */
+
+static unsigned char id_header[0x100];
+
+/* checks if fname points to valid MegaCD image */
+static int emu_cd_check(int *pregion, const char *fname_in)
+{
+	const char *fname = fname_in;
+	unsigned char buf[32];
+	pm_file *cd_f;
+	int region = 4; // 1: Japan, 4: US, 8: Europe
+	char ext[5];
+	cue_track_type type = CT_UNKNOWN;
+	cue_data_t *cue_data = NULL;
+
+	get_ext(fname_in, ext);
+	if (strcasecmp(ext, ".cue") == 0) {
+		cue_data = cue_parse(fname_in);
+		if (cue_data != NULL) {
+			fname = cue_data->tracks[1].fname;
+			type  = cue_data->tracks[1].type;
+		}
+		else
+			return -1;
+	}
+
+	cd_f = pm_open(fname);
+	if (cue_data != NULL)
+		cue_destroy(cue_data);
+
+	if (cd_f == NULL) return 0; // let the upper level handle this
+
+	if (pm_read(buf, 32, cd_f) != 32) {
+		pm_close(cd_f);
+		return -1;
+	}
+
+	if (!strncasecmp("SEGADISCSYSTEM", (char *)buf+0x00, 14)) {
+		if (type && type != CT_ISO)
+			elprintf(EL_STATUS, ".cue has wrong type: %i", type);
+		type = CT_ISO;       // Sega CD (ISO)
+	}
+	if (!strncasecmp("SEGADISCSYSTEM", (char *)buf+0x10, 14)) {
+		if (type && type != CT_BIN)
+			elprintf(EL_STATUS, ".cue has wrong type: %i", type);
+		type = CT_BIN;       // Sega CD (BIN)
+	}
+
+	if (type == CT_UNKNOWN) {
+		pm_close(cd_f);
+		return 0;
+	}
+
+	pm_seek(cd_f, (type == CT_ISO) ? 0x100 : 0x110, SEEK_SET);
+	pm_read(id_header, sizeof(id_header), cd_f);
+
+	/* it seems we have a CD image here. Try to detect region now.. */
+	pm_seek(cd_f, (type == CT_ISO) ? 0x100+0x10B : 0x110+0x10B, SEEK_SET);
+	pm_read(buf, 1, cd_f);
+	pm_close(cd_f);
+
+	if (buf[0] == 0x64) region = 8; // EU
+	if (buf[0] == 0xa1) region = 1; // JAP
+
+	lprintf("detected %s Sega/Mega CD image with %s region\n",
+		type == CT_BIN ? "BIN" : "ISO", region != 4 ? (region == 8 ? "EU" : "JAP") : "USA");
+
+	if (pregion != NULL) *pregion = region;
+
+	return type;
+}
+
+static int detect_media(const char *fname)
+{
+	static const short sms_offsets[] = { 0x7ff0, 0x3ff0, 0x1ff0 };
+	static const char *sms_exts[] = { "sms", "gg", "sg" };
+	static const char *md_exts[] = { "gen", "bin", "smd" };
+	char buff0[32], buff[32];
+	unsigned short *d16;
+	pm_file *pmf;
+	char ext[5];
+	int i;
+
+	get_ext(fname, ext);
+
+	// detect wrong extensions
+	if (!strcmp(ext, ".srm") || !strcmp(ext, "s.gz") || !strcmp(ext, ".mds")) // s.gz ~ .mds.gz
+		return PM_BAD;
+
+	/* don't believe in extensions, except .cue */
+	if (strcasecmp(ext, ".cue") == 0)
+		return PM_CD;
+
+	pmf = pm_open(fname);
+	if (pmf == NULL)
+		return PM_BAD;
+
+	if (pm_read(buff0, 32, pmf) != 32) {
+		pm_close(pmf);
+		return PM_BAD;
+	}
+
+	if (strncasecmp("SEGADISCSYSTEM", buff0 + 0x00, 14) == 0 ||
+	    strncasecmp("SEGADISCSYSTEM", buff0 + 0x10, 14) == 0) {
+		pm_close(pmf);
+		return PM_CD;
+	}
+
+	/* check for SMD evil */
+	if (pmf->size >= 0x4200 && (pmf->size & 0x3fff) == 0x200) {
+		if (pm_seek(pmf, sms_offsets[0] + 0x200, SEEK_SET) == sms_offsets[0] + 0x200 &&
+		    pm_read(buff, 16, pmf) == 16 &&
+		    strncmp("TMR SEGA", buff, 8) == 0)
+			goto looks_like_sms;
+
+		/* could parse further but don't bother */
+		goto extension_check;
+	}
+
+	/* MD header? Act as TMSS BIOS here */
+	if (pm_seek(pmf, 0x100, SEEK_SET) == 0x100 && pm_read(buff, 16, pmf) == 16) {
+		if (strncmp(buff, "SEGA", 4) == 0 || strncmp(buff, " SEG", 4) == 0)
+			goto looks_like_md;
+	}
+
+	for (i = 0; i < array_size(sms_offsets); i++) {
+		if (pm_seek(pmf, sms_offsets[i], SEEK_SET) != sms_offsets[i])
+			continue;
+
+		if (pm_read(buff, 16, pmf) != 16)
+			continue;
+
+		if (strncmp("TMR SEGA", buff, 8) == 0)
+			goto looks_like_sms;
+	}
+
+extension_check:
+	/* probably some headerless thing. Maybe check the extension after all. */
+	for (i = 0; i < array_size(md_exts); i++)
+		if (strcasecmp(pmf->ext, md_exts[i]) == 0)
+			goto looks_like_md;
+
+	for (i = 0; i < array_size(sms_exts); i++)
+		if (strcasecmp(pmf->ext, sms_exts[i]) == 0)
+			goto looks_like_sms;
+
+	/* If everything else fails, make a guess on the reset vector */
+	d16 = (unsigned short *)(buff0 + 4);
+	if ((((d16[0] << 16) | d16[1]) & 0xffffff) >= pmf->size) {
+		lprintf("bad MD reset vector, assuming SMS\n");
+		goto looks_like_sms;
+	}
+
+looks_like_md:
+	pm_close(pmf);
+	return PM_MD_CART;
+
+looks_like_sms:
+	pm_close(pmf);
+	return PM_MARK3;
+}
 
 static int extract_text(char *dest, const unsigned char *src, int len, int swab)
 {
@@ -266,34 +365,24 @@ static int extract_text(char *dest, const unsigned char *src, int len, int swab)
 	return p - dest;
 }
 
-static char *emu_make_rom_id(const char *fname)
+static char *emu_make_rom_id(void)
 {
 	static char id_string[3+0xe*3+0x3*3+0x30*3+3];
 	int pos, swab = 1;
 
-	if (PicoIn.AHW & PAHW_MCD) {
+	if (PicoAHW & PAHW_MCD) {
 		strcpy(id_string, "CD|");
 		swab = 0;
 	}
-	else if (PicoIn.AHW & PAHW_SMS)
-		strcpy(id_string, "MS|");
-	else	strcpy(id_string, "MD|");
+	else strcpy(id_string, "MD|");
 	pos = 3;
 
-	if (!(PicoIn.AHW & PAHW_SMS)) {
-		pos += extract_text(id_string + pos, media_id_header + 0x80, 0x0e, swab); // serial
-		id_string[pos] = '|'; pos++;
-		pos += extract_text(id_string + pos, media_id_header + 0xf0, 0x03, swab); // region
-		id_string[pos] = '|'; pos++;
-		pos += extract_text(id_string + pos, media_id_header + 0x50, 0x30, swab); // overseas name
-		id_string[pos] = 0;
-		if (pos > 5)
-			return id_string;
-		pos = 3;
-	}
-
-	// can't find name in ROM, use filename
-	fname_ext(id_string + 3, sizeof(id_string) - 3, NULL, NULL, fname);
+	pos += extract_text(id_string + pos, id_header + 0x80, 0x0e, swab); // serial
+	id_string[pos] = '|'; pos++;
+	pos += extract_text(id_string + pos, id_header + 0xf0, 0x03, swab); // region
+	id_string[pos] = '|'; pos++;
+	pos += extract_text(id_string + pos, id_header + 0x50, 0x30, swab); // overseas name
+	id_string[pos] = 0;
 
 	return id_string;
 }
@@ -301,10 +390,10 @@ static char *emu_make_rom_id(const char *fname)
 // buffer must be at least 150 byte long
 void emu_get_game_name(char *str150)
 {
-	int ret, swab = (PicoIn.AHW & PAHW_MCD) ? 0 : 1;
+	int ret, swab = (PicoAHW & PAHW_MCD) ? 0 : 1;
 	char *s, *d;
 
-	ret = extract_text(str150, media_id_header + 0x50, 0x30, swab); // overseas name
+	ret = extract_text(str150, id_header + 0x50, 0x30, swab); // overseas name
 
 	for (s = d = str150 + 1; s < str150+ret; s++)
 	{
@@ -315,27 +404,27 @@ void emu_get_game_name(char *str150)
 	*d = 0;
 }
 
+static void shutdown_MCD(void)
+{
+	if ((PicoAHW & PAHW_MCD) && Pico_mcd != NULL)
+		Stop_CD();
+	PicoAHW &= ~PAHW_MCD;
+}
+
 static void system_announce(void)
 {
-	const char *sys_name, *tv_standard, *extra = "";
+	const char *sys_name, *tv_standard;
 	int fps;
 
-	if (PicoIn.AHW & PAHW_SMS) {
+	if (PicoAHW & PAHW_SMS) {
 		sys_name = "Master System";
-#ifdef NO_SMS
-		extra = " [no support]";
-#endif
-	} else if (PicoIn.AHW & PAHW_PICO) {
+	} else if (PicoAHW & PAHW_PICO) {
 		sys_name = "Pico";
-	} else if ((PicoIn.AHW & (PAHW_32X|PAHW_MCD)) == (PAHW_32X|PAHW_MCD)) {
-		sys_name = "32X + Mega CD";
-		if ((Pico.m.hardware & 0xc0) == 0x80)
-			sys_name = "32X + Sega CD";
-	} else if (PicoIn.AHW & PAHW_MCD) {
+	} else if (PicoAHW & PAHW_MCD) {
 		sys_name = "Mega CD";
 		if ((Pico.m.hardware & 0xc0) == 0x80)
 			sys_name = "Sega CD";
-	} else if (PicoIn.AHW & PAHW_32X) {
+	} else if (PicoAHW & PAHW_32X) {
 		sys_name = "32X";
 	} else {
 		sys_name = "MegaDrive";
@@ -345,75 +434,64 @@ static void system_announce(void)
 	tv_standard = Pico.m.pal ? "PAL" : "NTSC";
 	fps = Pico.m.pal ? 50 : 60;
 
-	emu_status_msg("%s %s / %dFPS%s", tv_standard, sys_name, fps, extra);
+	emu_status_msg("%s %s / %dFPS", tv_standard, sys_name, fps);
 }
 
-static void do_region_override(const char *media_fname)
+// note: this function might mangle rom_fname
+// XXX: portions of this code should move to pico/
+int emu_reload_rom(char *rom_fname)
 {
-	// we only need to override region if config tells us so
-	int ret = emu_read_config(media_fname, 0);
-	if (!ret) emu_read_config(NULL, 0);
-}
-
-int emu_reload_rom(const char *rom_fname_in)
-{
-	// use setting before rom config is loaded
-	int autoload = g_autostateld_opt;
-	char *rom_fname = NULL;
+	unsigned int rom_size = 0;
+	char *used_rom_name = rom_fname;
+	unsigned char *rom_data = NULL;
 	char ext[5];
-	enum media_type_e media_type;
-	int menu_romload_started = 0;
-	char carthw_path[512];
-	int retval = 0;
+	pm_file *rom = NULL;
+	int cd_state = CIT_NOT_CD;
+	int ret, media_type, cd_region;
+	int cfg_loaded = 0, bad_rom = 0;
 
-	lprintf("emu_ReloadRom(%s)\n", rom_fname_in);
-
-	rom_fname = strdup(rom_fname_in);
-	if (rom_fname == NULL)
-		return 0;
+	lprintf("emu_ReloadRom(%s)\n", rom_fname);
 
 	get_ext(rom_fname, ext);
 
-	// early cleanup
-	PicoPatchUnload();
+	// check for movie file
 	if (movie_data) {
 		free(movie_data);
 		movie_data = 0;
 	}
-
 	if (!strcmp(ext, ".gmv"))
 	{
 		// check for both gmv and rom
 		int dummy;
 		FILE *movie_file = fopen(rom_fname, "rb");
-		if (!movie_file) {
-			menu_update_msg("Failed to open movie.");
-			goto out;
+		if(!movie_file) {
+			me_update_msg("Failed to open movie.");
+			return 0;
 		}
 		fseek(movie_file, 0, SEEK_END);
 		movie_size = ftell(movie_file);
 		fseek(movie_file, 0, SEEK_SET);
-		if (movie_size < 64+3) {
-			menu_update_msg("Invalid GMV file.");
+		if(movie_size < 64+3) {
+			me_update_msg("Invalid GMV file.");
 			fclose(movie_file);
-			goto out;
+			return 0;
 		}
 		movie_data = malloc(movie_size);
-		if (movie_data == NULL) {
-			menu_update_msg("low memory.");
+		if(movie_data == NULL) {
+			me_update_msg("low memory.");
 			fclose(movie_file);
-			goto out;
+			return 0;
 		}
-		dummy = fread(movie_data, 1, movie_size, movie_file);
+		fread(movie_data, 1, movie_size, movie_file);
 		fclose(movie_file);
 		if (strncmp((char *)movie_data, "Gens Movie TEST", 15) != 0) {
-			menu_update_msg("Invalid GMV file.");
-			goto out;
+			me_update_msg("Invalid GMV file.");
+			return 0;
 		}
 		dummy = try_rfn_cut(rom_fname) || try_rfn_cut(rom_fname);
 		if (!dummy) {
-			menu_update_msg("Could't find a ROM for movie.");
-			goto out;
+			me_update_msg("Could't find a ROM for movie.");
+			return 0;
 		}
 		get_ext(rom_fname, ext);
 		lprintf("gmv loaded for %s\n", rom_fname);
@@ -424,43 +502,119 @@ int emu_reload_rom(const char *rom_fname_in)
 		PicoPatchLoad(rom_fname);
 		dummy = try_rfn_cut(rom_fname) || try_rfn_cut(rom_fname);
 		if (!dummy) {
-			menu_update_msg("Could't find a ROM to patch.");
-			goto out;
+			me_update_msg("Could't find a ROM to patch.");
+			return 0;
 		}
 		get_ext(rom_fname, ext);
 	}
 
-	menu_romload_prepare(rom_fname); // also CD load
-	menu_romload_started = 1;
-
-	emu_make_path(carthw_path, "carthw.cfg", sizeof(carthw_path));
-
-	media_type = PicoLoadMedia(rom_fname, carthw_path,
-			find_bios, do_region_override);
-
-	switch (media_type) {
-	case PM_BAD_DETECT:
-		menu_update_msg("Not a ROM/CD img selected.");
-		goto out;
-	case PM_BAD_CD:
-		menu_update_msg("Invalid CD image");
-		goto out;
-	case PM_BAD_CD_NO_BIOS:
-		// find_bios() prints a message
-		goto out;
-	case PM_ERROR:
-		menu_update_msg("Load error");
-		goto out;
-	default:
-		break;
+	media_type = detect_media(rom_fname);
+	if (media_type == PM_BAD) {
+		me_update_msg("Not a ROM/CD img selected.");
+		return 0;
 	}
 
-	// make quirks visible in UI
-	if (PicoIn.quirks & PQUIRK_FORCE_6BTN)
-		currentConfig.input_dev0 = PICO_INPUT_PAD_6BTN;
+	shutdown_MCD();
+	PicoPatchUnload();
+	PicoCartUnload();
+	rom_loaded = 0;
+
+	PicoAHW = 0;
+
+	if (media_type == PM_CD)
+	{
+		// check for MegaCD image
+		cd_state = emu_cd_check(&cd_region, rom_fname);
+		if (cd_state >= 0 && cd_state != CIT_NOT_CD)
+		{
+			// valid CD image, check for BIOS..
+
+			// we need to have config loaded at this point
+			ret = emu_read_config(1, 0);
+			if (!ret) emu_read_config(0, 0);
+			cfg_loaded = 1;
+
+			if (PicoRegionOverride) {
+				cd_region = PicoRegionOverride;
+				lprintf("override region to %s\n", cd_region != 4 ?
+					(cd_region == 8 ? "EU" : "JAP") : "USA");
+			}
+			if (!find_bios(cd_region, &used_rom_name))
+				return 0;
+
+			get_ext(used_rom_name, ext);
+			PicoAHW |= PAHW_MCD;
+		}
+		else {
+			me_update_msg("Invalid CD image");
+			return 0;
+		}
+	}
+	else if (media_type == PM_MARK3) {
+		lprintf("detected SMS ROM\n");
+		PicoAHW = PAHW_SMS;
+	}
+
+	rom = pm_open(used_rom_name);
+	if (rom == NULL) {
+		me_update_msg("Failed to open ROM");
+		return 0;
+	}
+
+	menu_romload_prepare(used_rom_name); // also CD load
+	used_rom_name = NULL; // uses static_buff
+
+	ret = PicoCartLoad(rom, &rom_data, &rom_size, (PicoAHW & PAHW_SMS) ? 1 : 0);
+	pm_close(rom);
+	if (ret != 0) {
+		if      (ret == 2) me_update_msg("Out of memory");
+		else if (ret == 3) me_update_msg("Read failed");
+		else               me_update_msg("PicoCartLoad() failed.");
+		goto fail;
+	}
+
+	// detect wrong files
+	if (strncmp((char *)rom_data, "Pico", 4) == 0)
+		bad_rom = 1;
+	else if (!(PicoAHW & PAHW_SMS)) {
+		unsigned short *d = (unsigned short *)(rom_data + 4);
+		if ((((d[0] << 16) | d[1]) & 0xffffff) >= (int)rom_size) {
+			lprintf("bad reset vector\n");
+			bad_rom = 1;
+		}
+	}
+
+	if (bad_rom) {
+		me_update_msg("Bad ROM detected.");
+		goto fail;
+	}
+
+	// load config for this ROM (do this before insert to get correct region)
+	if (!(PicoAHW & PAHW_MCD))
+		memcpy(id_header, rom_data + 0x100, sizeof(id_header));
+	if (!cfg_loaded) {
+		ret = emu_read_config(1, 0);
+		if (!ret) emu_read_config(0, 0);
+	}
+
+	emu_make_path(static_buff, "carthw.cfg", sizeof(static_buff));
+	if (PicoCartInsert(rom_data, rom_size, static_buff)) {
+		me_update_msg("Failed to load ROM.");
+		goto fail;
+	}
+
+	// insert CD if it was detected
+	if (cd_state != CIT_NOT_CD) {
+		ret = Insert_CD(rom_fname, cd_state);
+		if (ret != 0) {
+			PicoCartUnload();
+			rom_data = NULL; // freed by unload
+			me_update_msg("Insert_CD() failed, invalid CD image?");
+			goto fail;
+		}
+	}
 
 	menu_romload_end();
-	menu_romload_started = 0;
 
 	if (PicoPatches) {
 		PicoPatchPrepare();
@@ -470,17 +624,15 @@ int emu_reload_rom(const char *rom_fname_in)
 	// additional movie stuff
 	if (movie_data)
 	{
-		enum input_device indev = (movie_data[0x14] == '6') ?
-			PICO_INPUT_PAD_6BTN : PICO_INPUT_PAD_3BTN;
-		PicoSetInputDevice(0, indev);
-		PicoSetInputDevice(1, indev);
-
-		PicoIn.opt |= POPT_DIS_VDP_FIFO; // no VDP fifo timing
+		if (movie_data[0x14] == '6')
+		     PicoOpt |=  POPT_6BTN_PAD; // 6 button pad
+		else PicoOpt &= ~POPT_6BTN_PAD;
+		PicoOpt |= POPT_DIS_VDP_FIFO; // no VDP fifo timing
 		if (movie_data[0xF] >= 'A') {
 			if (movie_data[0x16] & 0x80) {
-				PicoIn.regionOverride = 8;
+				PicoRegionOverride = 8;
 			} else {
-				PicoIn.regionOverride = 4;
+				PicoRegionOverride = 4;
 			}
 			PicoReset();
 			// TODO: bits 6 & 5
@@ -491,65 +643,65 @@ int emu_reload_rom(const char *rom_fname_in)
 	else
 	{
 		system_announce();
-		PicoIn.opt &= ~POPT_DIS_VDP_FIFO;
+		PicoOpt &= ~POPT_DIS_VDP_FIFO;
 	}
 
 	strncpy(rom_fname_loaded, rom_fname, sizeof(rom_fname_loaded)-1);
 	rom_fname_loaded[sizeof(rom_fname_loaded)-1] = 0;
+	rom_loaded = 1;
 
 	// load SRAM for this ROM
 	if (currentConfig.EmuOpt & EOPT_EN_SRAM)
 		emu_save_load_game(1, 1);
 
-	// state autoload?
-	if (autoload) {
-		int time, newest = 0, newest_slot = -1;
-		int slot;
+	return 1;
 
-		for (slot = 0; slot < 10; slot++) {
-			if (emu_check_save_file(slot, &time)) {
-				if (time > newest) {
-					newest = time;
-					newest_slot = slot;
-				}
-			}
-		}
-
-		if (newest_slot >= 0) {
-			lprintf("autoload slot %d\n", newest_slot);
-			state_slot = newest_slot;
-			emu_save_load_game(1, 0);
-		}
-		else {
-			lprintf("no save to autoload.\n");
-		}
-	}
-
-	retval = 1;
-out:
-	if (menu_romload_started)
-		menu_romload_end();
-	free(rom_fname);
-	return retval;
+fail:
+	if (rom_data)
+		free(rom_data);
+	menu_romload_end();
+	return 0;
 }
 
 int emu_swap_cd(const char *fname)
 {
-	enum cd_img_type cd_type;
+	cd_img_type cd_type;
 	int ret = -1;
 
-	cd_type = PicoCdCheck(fname, NULL);
+	cd_type = emu_cd_check(NULL, fname);
 	if (cd_type != CIT_NOT_CD)
-		ret = cdd_load(fname, cd_type);
+		ret = Insert_CD(fname, cd_type);
 	if (ret != 0) {
-		menu_update_msg("Load failed, invalid CD image?");
+		me_update_msg("Load failed, invalid CD image?");
 		return 0;
 	}
 
 	strncpy(rom_fname_loaded, fname, sizeof(rom_fname_loaded)-1);
-	rom_fname_loaded[sizeof(rom_fname_loaded) - 1] = 0;
-
+	rom_fname_loaded[sizeof(rom_fname_loaded)-1] = 0;
 	return 1;
+}
+
+static void romfname_ext(char *dst, const char *prefix, const char *ext)
+{
+	char *p;
+	int prefix_len = 0;
+
+	// make save filename
+	p = rom_fname_loaded + strlen(rom_fname_loaded) - 1;
+	for (; p >= rom_fname_loaded && *p != PATH_SEP_C; p--); p++;
+	*dst = 0;
+	if (prefix) {
+		int len = plat_get_root_dir(dst, 512);
+		strcpy(dst + len, prefix);
+		prefix_len = len + strlen(prefix);
+	}
+#ifdef UIQ3
+	else p = rom_fname_loaded; // backward compatibility
+#endif
+	strncpy(dst + prefix_len, p, 511-prefix_len);
+	dst[511-8] = 0;
+	if (dst[strlen(dst)-4] == '.') dst[strlen(dst)-4] = 0;
+	if (ext) strcat(dst, ext);
 }
 
 // <base dir><end>
@@ -578,43 +730,17 @@ static void make_config_cfg(char *cfg_buff_512)
 	cfg_buff_512[511] = 0;
 }
 
-void emu_prep_defconfig(void)
-{
-	memset(&defaultConfig, 0, sizeof(defaultConfig));
-	defaultConfig.EmuOpt    = 0x9d | EOPT_EN_CD_LEDS;
-	defaultConfig.s_PicoOpt = POPT_EN_STEREO|POPT_EN_FM|POPT_EN_PSG|POPT_EN_Z80 |
-				  POPT_EN_MCD_PCM|POPT_EN_MCD_CDDA|POPT_EN_MCD_GFX |
-				  POPT_EN_DRC|POPT_ACC_SPRITES |
-				  POPT_EN_32X|POPT_EN_PWM;
-	defaultConfig.s_PsndRate = 44100;
-	defaultConfig.s_PicoRegion = 0; // auto
-	defaultConfig.s_PicoAutoRgnOrder = 0x184; // US, EU, JP
-	defaultConfig.s_PicoCDBuffers = 0;
-	defaultConfig.confirm_save = EOPT_CONFIRM_SAVE;
-	defaultConfig.Frameskip = -1; // auto
-	defaultConfig.input_dev0 = PICO_INPUT_PAD_3BTN;
-	defaultConfig.input_dev1 = PICO_INPUT_PAD_3BTN;
-	defaultConfig.volume = 50;
-	defaultConfig.gamma = 100;
-	defaultConfig.scaling = 0;
-	defaultConfig.turbo_rate = 15;
-	defaultConfig.msh2_khz = PICO_MSH2_HZ / 1000;
-	defaultConfig.ssh2_khz = PICO_SSH2_HZ / 1000;
-
-	// platform specific overrides
-	pemu_prep_defconfig();
-}
-
 void emu_set_defconfig(void)
 {
 	memcpy(&currentConfig, &defaultConfig, sizeof(currentConfig));
-	PicoIn.opt = currentConfig.s_PicoOpt;
-	PicoIn.sndRate = currentConfig.s_PsndRate;
-	PicoIn.regionOverride = currentConfig.s_PicoRegion;
-	PicoIn.autoRgnOrder = currentConfig.s_PicoAutoRgnOrder;
+	PicoOpt = currentConfig.s_PicoOpt;
+	PsndRate = currentConfig.s_PsndRate;
+	PicoRegionOverride = currentConfig.s_PicoRegion;
+	PicoAutoRgnOrder = currentConfig.s_PicoAutoRgnOrder;
+	PicoCDBuffers = currentConfig.s_PicoCDBuffers;
 }
 
-int emu_read_config(const char *rom_fname, int no_defaults)
+int emu_read_config(int game, int no_defaults)
 {
 	char cfg[512];
 	int ret;
@@ -622,42 +748,45 @@ int emu_read_config(const char *rom_fname, int no_defaults)
 	if (!no_defaults)
 		emu_set_defconfig();
 
-	if (rom_fname == NULL)
+	if (!game)
 	{
-		// global config
 		make_config_cfg(cfg);
 		ret = config_readsect(cfg, NULL);
 	}
 	else
 	{
-		char ext[16];
-		int vol;
+		char *sect = emu_make_rom_id();
 
+		// try new .cfg way
 		if (config_slot != 0)
-			snprintf(ext, sizeof(ext), ".%i.cfg", config_slot);
+		     sprintf(cfg, "game.%i.cfg", config_slot);
+		else strcpy(cfg,  "game.cfg");
+
+		ret = -1;
+		if (config_havesect(cfg, sect))
+		{
+			// read user's config
+			int vol = currentConfig.volume;
+			emu_set_defconfig();
+			ret = config_readsect(cfg, sect);
+			currentConfig.volume = vol; // make vol global (bah)
+		}
 		else
-			strcpy(ext, ".cfg");
-
-		fname_ext(cfg, sizeof(cfg), "cfg"PATH_SEP, ext, rom_fname);
-
-		// read user's config
-		vol = currentConfig.volume;
-		ret = config_readsect(cfg, NULL);
-		currentConfig.volume = vol; // make vol global (bah)
-
-		if (ret != 0)
 		{
 			// read global config, and apply game_def.cfg on top
 			make_config_cfg(cfg);
 			config_readsect(cfg, NULL);
-
 			emu_make_path(cfg, "game_def.cfg", sizeof(cfg));
-			ret = config_readsect(cfg, emu_make_rom_id(rom_fname));
+			ret = config_readsect(cfg, sect);
+		}
+
+		if (ret == 0)
+		{
+			lprintf("loaded cfg from sect \"%s\"\n", sect);
 		}
 	}
 
-	pemu_validate_config();
-	PicoIn.overclockM68k = currentConfig.overclock_68k;
+	plat_validate_config();
 
 	// some sanity checks
 #ifdef PSP
@@ -678,7 +807,7 @@ int emu_read_config(const char *rom_fname, int no_defaults)
 
 int emu_write_config(int is_game)
 {
-	char cfg[512];
+	char cfg[512], *game_sect = NULL;
 	int ret, write_lrom = 0;
 
 	if (!is_game)
@@ -686,20 +815,17 @@ int emu_write_config(int is_game)
 		make_config_cfg(cfg);
 		write_lrom = 1;
 	} else {
-		char ext[16];
-
 		if (config_slot != 0)
-			snprintf(ext, sizeof(ext), ".%i.cfg", config_slot);
-		else
-			strcpy(ext, ".cfg");
-
-		romfname_ext(cfg, sizeof(cfg), "cfg"PATH_SEP, ext);
+		     sprintf(cfg, "game.%i.cfg", config_slot);
+		else strcpy(cfg,  "game.cfg");
+		game_sect = emu_make_rom_id();
+		lprintf("emu_write_config: sect \"%s\"\n", game_sect);
 	}
 
 	lprintf("emu_write_config: %s ", cfg);
-	ret = config_write(cfg);
+	ret = config_writesect(cfg, game_sect);
 	if (write_lrom) config_writelrom(cfg);
-#ifdef __GP2X__
+#ifndef NO_SYNC
 	sync();
 #endif
 	lprintf((ret == 0) ? "(ok)\n" : "(failed)\n");
@@ -735,35 +861,17 @@ void name(int x, int y, const char *text)				\
 	}								\
 }
 
-mk_text_out(emu_text_out8,      unsigned char,    0xf0, g_screen_ptr, 1, g_screen_ppitch)
-mk_text_out(emu_text_out16,     unsigned short, 0xffff, g_screen_ptr, 1, g_screen_ppitch)
+mk_text_out(emu_text_out8,      unsigned char,    0xf0, g_screen_ptr, 1, g_screen_width)
+mk_text_out(emu_text_out16,     unsigned short, 0xffff, g_screen_ptr, 1, g_screen_width)
 mk_text_out(emu_text_out8_rot,  unsigned char,    0xf0,
-	(char *)g_screen_ptr  + (g_screen_ppitch - 1) * g_screen_height, -g_screen_height, 1)
+	(char *)g_screen_ptr  + (g_screen_width - 1) * g_screen_height, -g_screen_height, 1)
 mk_text_out(emu_text_out16_rot, unsigned short, 0xffff,
-	(short *)g_screen_ptr + (g_screen_ppitch - 1) * g_screen_height, -g_screen_height, 1)
+	(short *)g_screen_ptr + (g_screen_width - 1) * g_screen_height, -g_screen_height, 1)
 
 #undef mk_text_out
 
-void emu_osd_text16(int x, int y, const char *text)
-{
-	int len = strlen(text) * 8;
-	int i, h;
 
-	len++;
-	if (x + len > g_screen_width)
-		len = g_screen_width - x;
-
-	for (h = 0; h < 8; h++) {
-		unsigned short *p;
-		p = (unsigned short *)g_screen_ptr
-			+ x + g_screen_ppitch * (y + h);
-		for (i = len; i > 0; i--, p++)
-			*p = (*p >> 2) & 0x39e7;
-	}
-	emu_text_out16(x, y, text);
-}
-
-static void update_movie(void)
+void update_movie(void)
 {
 	int offs = Pico.m.frame_count*3 + 0x40;
 	if (offs+3 > movie_size) {
@@ -773,59 +881,52 @@ static void update_movie(void)
 		lprintf("END OF MOVIE.\n");
 	} else {
 		// MXYZ SACB RLDU
-		PicoIn.pad[0] = ~movie_data[offs]   & 0x8f; // ! SCBA RLDU
-		if(!(movie_data[offs]   & 0x10)) PicoIn.pad[0] |= 0x40; // C
-		if(!(movie_data[offs]   & 0x20)) PicoIn.pad[0] |= 0x10; // A
-		if(!(movie_data[offs]   & 0x40)) PicoIn.pad[0] |= 0x20; // B
-		PicoIn.pad[1] = ~movie_data[offs+1] & 0x8f; // ! SCBA RLDU
-		if(!(movie_data[offs+1] & 0x10)) PicoIn.pad[1] |= 0x40; // C
-		if(!(movie_data[offs+1] & 0x20)) PicoIn.pad[1] |= 0x10; // A
-		if(!(movie_data[offs+1] & 0x40)) PicoIn.pad[1] |= 0x20; // B
-		PicoIn.pad[0] |= (~movie_data[offs+2] & 0x0A) << 8; // ! MZYX
-		if(!(movie_data[offs+2] & 0x01)) PicoIn.pad[0] |= 0x0400; // X
-		if(!(movie_data[offs+2] & 0x04)) PicoIn.pad[0] |= 0x0100; // Z
-		PicoIn.pad[1] |= (~movie_data[offs+2] & 0xA0) << 4; // ! MZYX
-		if(!(movie_data[offs+2] & 0x10)) PicoIn.pad[1] |= 0x0400; // X
-		if(!(movie_data[offs+2] & 0x40)) PicoIn.pad[1] |= 0x0100; // Z
+		PicoPad[0] = ~movie_data[offs]   & 0x8f; // ! SCBA RLDU
+		if(!(movie_data[offs]   & 0x10)) PicoPad[0] |= 0x40; // C
+		if(!(movie_data[offs]   & 0x20)) PicoPad[0] |= 0x10; // A
+		if(!(movie_data[offs]   & 0x40)) PicoPad[0] |= 0x20; // B
+		PicoPad[1] = ~movie_data[offs+1] & 0x8f; // ! SCBA RLDU
+		if(!(movie_data[offs+1] & 0x10)) PicoPad[1] |= 0x40; // C
+		if(!(movie_data[offs+1] & 0x20)) PicoPad[1] |= 0x10; // A
+		if(!(movie_data[offs+1] & 0x40)) PicoPad[1] |= 0x20; // B
+		PicoPad[0] |= (~movie_data[offs+2] & 0x0A) << 8; // ! MZYX
+		if(!(movie_data[offs+2] & 0x01)) PicoPad[0] |= 0x0400; // X
+		if(!(movie_data[offs+2] & 0x04)) PicoPad[0] |= 0x0100; // Z
+		PicoPad[1] |= (~movie_data[offs+2] & 0xA0) << 4; // ! MZYX
+		if(!(movie_data[offs+2] & 0x10)) PicoPad[1] |= 0x0400; // X
+		if(!(movie_data[offs+2] & 0x40)) PicoPad[1] |= 0x0100; // Z
 	}
 }
 
-static int try_ropen_file(const char *fname, int *time)
+static int try_ropen_file(const char *fname)
 {
-	struct stat st;
 	FILE *f;
 
 	f = fopen(fname, "rb");
 	if (f) {
-		if (time != NULL) {
-			*time = 0;
-			if (fstat(fileno(f), &st) == 0)
-				*time = (int)st.st_mtime;
-		}
 		fclose(f);
 		return 1;
 	}
 	return 0;
 }
 
-char *emu_get_save_fname(int load, int is_sram, int slot, int *time)
+char *emu_get_save_fname(int load, int is_sram, int slot)
 {
 	char *saveFname = static_buff;
 	char ext[16];
 
 	if (is_sram)
 	{
-		strcpy(ext, (PicoIn.AHW & PAHW_MCD) ? ".brm" : ".srm");
-		romfname_ext(saveFname, sizeof(static_buff),
-			(PicoIn.AHW & PAHW_MCD) ? "brm"PATH_SEP : "srm"PATH_SEP, ext);
+		strcpy(ext, (PicoAHW & PAHW_MCD) ? ".brm" : ".srm");
+		romfname_ext(saveFname, (PicoAHW & PAHW_MCD) ? "brm"PATH_SEP : "srm"PATH_SEP, ext);
 		if (!load)
 			return saveFname;
 
-		if (try_ropen_file(saveFname, time))
+		if (try_ropen_file(saveFname))
 			return saveFname;
 
-		romfname_ext(saveFname, sizeof(static_buff), NULL, ext);
-		if (try_ropen_file(saveFname, time))
+		romfname_ext(saveFname, NULL, ext);
+		if (try_ropen_file(saveFname))
 			return saveFname;
 	}
 	else
@@ -838,16 +939,16 @@ char *emu_get_save_fname(int load, int is_sram, int slot, int *time)
 		strcat(ext, ext_main);
 
 		if (!load) {
-			romfname_ext(saveFname, sizeof(static_buff), "mds" PATH_SEP, ext);
+			romfname_ext(saveFname, "mds" PATH_SEP, ext);
 			return saveFname;
 		}
 		else {
-			romfname_ext(saveFname, sizeof(static_buff), "mds" PATH_SEP, ext);
-			if (try_ropen_file(saveFname, time))
+			romfname_ext(saveFname, "mds" PATH_SEP, ext);
+			if (try_ropen_file(saveFname))
 				return saveFname;
 
-			romfname_ext(saveFname, sizeof(static_buff), NULL, ext);
-			if (try_ropen_file(saveFname, time))
+			romfname_ext(saveFname, NULL, ext);
+			if (try_ropen_file(saveFname))
 				return saveFname;
 
 			// try the other ext
@@ -856,8 +957,8 @@ char *emu_get_save_fname(int load, int is_sram, int slot, int *time)
 				sprintf(ext, ".%i", slot);
 			strcat(ext, ext_othr);
 
-			romfname_ext(saveFname, sizeof(static_buff), "mds"PATH_SEP, ext);
-			if (try_ropen_file(saveFname, time))
+			romfname_ext(saveFname, "mds"PATH_SEP, ext);
+			if (try_ropen_file(saveFname))
 				return saveFname;
 		}
 	}
@@ -865,9 +966,9 @@ char *emu_get_save_fname(int load, int is_sram, int slot, int *time)
 	return NULL;
 }
 
-int emu_check_save_file(int slot, int *time)
+int emu_check_save_file(int slot)
 {
-	return emu_get_save_fname(1, 0, slot, time) ? 1 : 0;
+	return emu_get_save_fname(1, 0, slot) ? 1 : 0;
 }
 
 int emu_save_load_game(int load, int sram)
@@ -876,7 +977,7 @@ int emu_save_load_game(int load, int sram)
 	char *saveFname;
 
 	// make save filename
-	saveFname = emu_get_save_fname(load, sram, state_slot, NULL);
+	saveFname = emu_get_save_fname(load, sram, state_slot);
 	if (saveFname == NULL) {
 		if (!sram)
 			emu_status_msg(load ? "LOAD FAILED (missing file)" : "SAVE FAILED");
@@ -891,35 +992,32 @@ int emu_save_load_game(int load, int sram)
 		int sram_size;
 		unsigned char *sram_data;
 		int truncate = 1;
-		if (PicoIn.AHW & PAHW_MCD)
+		if (PicoAHW & PAHW_MCD)
 		{
-			if (PicoIn.opt & POPT_EN_MCD_RAMCART) {
+			if (PicoOpt & POPT_EN_MCD_RAMCART) {
 				sram_size = 0x12000;
-				sram_data = Pico.sv.data;
+				sram_data = SRam.data;
 				if (sram_data)
-					memcpy(sram_data, Pico_mcd->bram, 0x2000);
+					memcpy32((int *)sram_data, (int *)Pico_mcd->bram, 0x2000/4);
 			} else {
 				sram_size = 0x2000;
 				sram_data = Pico_mcd->bram;
 				truncate  = 0; // the .brm may contain RAM cart data after normal brm
 			}
 		} else {
-			sram_size = Pico.sv.size;
-			sram_data = Pico.sv.data;
+			sram_size = SRam.size;
+			sram_data = SRam.data;
 		}
-		if (sram_data == NULL)
-			return 0; // cart saves forcefully disabled for this game
+		if (!sram_data) return 0; // SRam forcefully disabled for this game
 
 		if (load)
 		{
 			sramFile = fopen(saveFname, "rb");
-			if (!sramFile)
-				return -1;
-			ret = fread(sram_data, 1, sram_size, sramFile);
-			ret = ret > 0 ? 0 : -1;
+			if(!sramFile) return -1;
+			fread(sram_data, 1, sram_size, sramFile);
 			fclose(sramFile);
-			if ((PicoIn.AHW & PAHW_MCD) && (PicoIn.opt&POPT_EN_MCD_RAMCART))
-				memcpy(Pico_mcd->bram, sram_data, 0x2000);
+			if ((PicoAHW & PAHW_MCD) && (PicoOpt&POPT_EN_MCD_RAMCART))
+				memcpy32((int *)Pico_mcd->bram, (int *)sram_data, 0x2000/4);
 		} else {
 			// sram save needs some special processing
 			// see if we have anything to save
@@ -933,7 +1031,7 @@ int emu_save_load_game(int load, int sram)
 				ret = fwrite(sram_data, 1, sram_size, sramFile);
 				ret = (ret != sram_size) ? -1 : 0;
 				fclose(sramFile);
-#ifdef __GP2X__
+#ifndef NO_SYNC
 				sync();
 #endif
 			}
@@ -944,7 +1042,7 @@ int emu_save_load_game(int load, int sram)
 	{
 		ret = PicoState(saveFname, !load);
 		if (!ret) {
-#ifdef __GP2X__
+#ifndef NO_SYNC
 			if (!load) sync();
 #endif
 			emu_status_msg(load ? "STATE LOADED" : "STATE SAVED");
@@ -963,10 +1061,10 @@ void emu_set_fastforward(int set_on)
 	static int set_Frameskip, set_EmuOpt, is_on = 0;
 
 	if (set_on && !is_on) {
-		set_PsndOut = PicoIn.sndOut;
+		set_PsndOut = PsndOut;
 		set_Frameskip = currentConfig.Frameskip;
 		set_EmuOpt = currentConfig.EmuOpt;
-		PicoIn.sndOut = NULL;
+		PsndOut = NULL;
 		currentConfig.Frameskip = 8;
 		currentConfig.EmuOpt &= ~4;
 		currentConfig.EmuOpt |= 0x40000;
@@ -974,14 +1072,11 @@ void emu_set_fastforward(int set_on)
 		emu_status_msg("FAST FORWARD");
 	}
 	else if (!set_on && is_on) {
-		PicoIn.sndOut = set_PsndOut;
+		PsndOut = set_PsndOut;
 		currentConfig.Frameskip = set_Frameskip;
 		currentConfig.EmuOpt = set_EmuOpt;
 		PsndRerate(1);
 		is_on = 0;
-		// mainly to unbreak pcm
-		if (PicoIn.AHW & PAHW_MCD)
-			pcd_state_loaded();
 	}
 }
 
@@ -997,7 +1092,7 @@ static void emu_tray_close(void)
 
 void emu_32x_startup(void)
 {
-	plat_video_toggle_renderer(0, 0); // HACK
+	plat_video_toggle_renderer(0, 1, 0);
 	system_announce();
 }
 
@@ -1040,11 +1135,11 @@ void run_events_pico(unsigned int events)
 		return;
 
 	/* handle other input modes */
-	if (PicoIn.pad[0] & 1) pico_pen_y--;
-	if (PicoIn.pad[0] & 2) pico_pen_y++;
-	if (PicoIn.pad[0] & 4) pico_pen_x--;
-	if (PicoIn.pad[0] & 8) pico_pen_x++;
-	PicoIn.pad[0] &= ~0x0f; // release UDLR
+	if (PicoPad[0] & 1) pico_pen_y--;
+	if (PicoPad[0] & 2) pico_pen_y++;
+	if (PicoPad[0] & 4) pico_pen_x--;
+	if (PicoPad[0] & 8) pico_pen_x++;
+	PicoPad[0] &= ~0x0f; // release UDLR
 
 	lim_x = (Pico.video.reg[12]&1) ? 319 : 255;
 	if (pico_pen_y < 8)
@@ -1063,7 +1158,7 @@ void run_events_pico(unsigned int events)
 	PicoPicohw.pen_pos[1] = pico_inp_mode == 1 ? (0x2f8 + pico_pen_y) : (0x1fc + pico_pen_y);
 }
 
-static void do_turbo(unsigned short *pad, int acts)
+static void do_turbo(int *pad, int acts)
 {
 	static int turbo_pad = 0;
 	static unsigned char turbo_cnt[3] = { 0, 0, 0 };
@@ -1092,17 +1187,17 @@ static void run_events_ui(unsigned int which)
 	if (which & (PEV_STATE_LOAD|PEV_STATE_SAVE))
 	{
 		int do_it = 1;
-		if ( emu_check_save_file(state_slot, NULL) &&
-			(((which & PEV_STATE_LOAD) && (currentConfig.confirm_save & EOPT_CONFIRM_LOAD)) ||
-			 ((which & PEV_STATE_SAVE) && (currentConfig.confirm_save & EOPT_CONFIRM_SAVE))) )
+		if ( emu_check_save_file(state_slot) &&
+				(((which & PEV_STATE_LOAD) && (currentConfig.EmuOpt & EOPT_CONFIRM_LOAD)) ||
+				 ((which & PEV_STATE_SAVE) && (currentConfig.EmuOpt & EOPT_CONFIRM_SAVE))) )
 		{
 			const char *nm;
 			char tmp[64];
 			int keys, len;
 
-			strcpy(tmp, (which & PEV_STATE_LOAD) ? "LOAD STATE? " : "OVERWRITE SAVE? ");
+			strcpy(tmp, (which & PEV_STATE_LOAD) ? "LOAD STATE?" : "OVERWRITE SAVE?");
 			len = strlen(tmp);
-			nm = in_get_key_name(-1, -PBTN_MOK);
+			nm = in_get_key_name(-1, -PBTN_MA3);
 			snprintf(tmp + len, sizeof(tmp) - len, "(%s=yes, ", nm);
 			len = strlen(tmp);
 			nm = in_get_key_name(-1, -PBTN_MBACK);
@@ -1110,16 +1205,16 @@ static void run_events_ui(unsigned int which)
 
 			plat_status_msg_busy_first(tmp);
 
-			in_set_config_int(0, IN_CFG_BLOCKING, 1);
-			while (in_menu_wait_any(NULL, 50) & (PBTN_MOK | PBTN_MBACK))
+			in_set_blocking(1);
+			while (in_menu_wait_any(50) & (PBTN_MA3|PBTN_MBACK))
 				;
-			while ( !((keys = in_menu_wait_any(NULL, 50)) & (PBTN_MOK | PBTN_MBACK)))
+			while ( !((keys = in_menu_wait_any(50)) & (PBTN_MA3|PBTN_MBACK)) )
 				;
 			if (keys & PBTN_MBACK)
 				do_it = 0;
-			while (in_menu_wait_any(NULL, 50) & (PBTN_MOK | PBTN_MBACK))
+			while (in_menu_wait_any(50) & (PBTN_MA3|PBTN_MBACK))
 				;
-			in_set_config_int(0, IN_CFG_BLOCKING, 0);
+			in_set_blocking(0);
 		}
 		if (do_it) {
 			plat_status_msg_busy_first((which & PEV_STATE_LOAD) ? "LOADING STATE" : "SAVING STATE");
@@ -1128,9 +1223,9 @@ static void run_events_ui(unsigned int which)
 			PicoStateProgressCB = NULL;
 		}
 	}
-	if (which & PEV_SWITCH_RND)
+	if ((which & PEV_SWITCH_RND) && !(PicoAHW & PAHW_32X))
 	{
-		plat_video_toggle_renderer(1, 0);
+		plat_video_toggle_renderer(1, 0, 0);
 	}
 	if (which & (PEV_SSLOT_PREV|PEV_SSLOT_NEXT))
 	{
@@ -1145,10 +1240,8 @@ static void run_events_ui(unsigned int which)
 		}
 
 		emu_status_msg("SAVE SLOT %i [%s]", state_slot,
-			emu_check_save_file(state_slot, NULL) ? "USED" : "FREE");
+			emu_check_save_file(state_slot) ? "USED" : "FREE");
 	}
-	if (which & PEV_RESET)
-		emu_reset_game();
 	if (which & PEV_MENU)
 		engineState = PGS_Menu;
 }
@@ -1165,13 +1258,13 @@ void emu_update_input(void)
 	pl_actions[0] = actions[IN_BINDTYPE_PLAYER12];
 	pl_actions[1] = actions[IN_BINDTYPE_PLAYER12] >> 16;
 
-	PicoIn.pad[0] = pl_actions[0] & 0xfff;
-	PicoIn.pad[1] = pl_actions[1] & 0xfff;
+	PicoPad[0] = pl_actions[0] & 0xfff;
+	PicoPad[1] = pl_actions[1] & 0xfff;
 
 	if (pl_actions[0] & 0x7000)
-		do_turbo(&PicoIn.pad[0], pl_actions[0]);
+		do_turbo(&PicoPad[0], pl_actions[0]);
 	if (pl_actions[1] & 0x7000)
-		do_turbo(&PicoIn.pad[1], pl_actions[1]);
+		do_turbo(&PicoPad[1], pl_actions[1]);
 
 	events = actions[IN_BINDTYPE_EMU] & PEV_MASK;
 
@@ -1187,7 +1280,7 @@ void emu_update_input(void)
 
 	events &= ~prev_events;
 
-	if (PicoIn.AHW == PAHW_PICO)
+	if (PicoAHW == PAHW_PICO)
 		run_events_pico(events);
 	if (events)
 		run_events_ui(events);
@@ -1204,30 +1297,6 @@ static void mkdir_path(char *path_with_reserve, int pos, const char *name)
 		return;
 	if (mkdir(path_with_reserve, 0777) < 0)
 		lprintf("failed to create: %s\n", path_with_reserve);
-}
-
-void emu_cmn_forced_frame(int no_scale, int do_emu)
-{
-	int po_old = PicoIn.opt;
-	int y;
-
-	for (y = 0; y < g_screen_height; y++)
-		memset32((short *)g_screen_ptr + g_screen_ppitch * y, 0,
-			 g_screen_width * 2 / 4);
-
-	PicoIn.opt &= ~POPT_ALT_RENDERER;
-	PicoIn.opt |= POPT_ACC_SPRITES;
-	if (!no_scale)
-		PicoIn.opt |= POPT_EN_SOFTSCALE;
-
-	PicoDrawSetOutFormat(PDF_RGB555, 1);
-	Pico.m.dirtyPal = 1;
-	if (do_emu)
-		PicoFrame();
-	else
-		PicoFrameDrawOnly();
-
-	PicoIn.opt = po_old;
 }
 
 void emu_init(void)
@@ -1253,100 +1322,41 @@ void emu_init(void)
 	mkdir_path(path, pos, "mds");
 	mkdir_path(path, pos, "srm");
 	mkdir_path(path, pos, "brm");
-	mkdir_path(path, pos, "cfg");
-
-	pprof_init();
 
 	make_config_cfg(path);
 	config_readlrom(path);
 
 	PicoInit();
-	PicoIn.osdMessage = plat_status_msg_busy_next;
-	PicoIn.mcdTrayOpen = emu_tray_open;
-	PicoIn.mcdTrayClose = emu_tray_close;
-
-	sndout_init();
+	PicoMessage = plat_status_msg_busy_next;
+	PicoMCDopenTray = emu_tray_open;
+	PicoMCDcloseTray = emu_tray_close;
 }
 
 void emu_finish(void)
 {
 	// save SRAM
-	if ((currentConfig.EmuOpt & EOPT_EN_SRAM) && Pico.sv.changed) {
+	if ((currentConfig.EmuOpt & EOPT_EN_SRAM) && SRam.changed) {
 		emu_save_load_game(0, 1);
-		Pico.sv.changed = 0;
+		SRam.changed = 0;
 	}
 
 	if (!(currentConfig.EmuOpt & EOPT_NO_AUTOSVCFG)) {
 		char cfg[512];
 		make_config_cfg(cfg);
 		config_writelrom(cfg);
-#ifdef __GP2X__
+#ifndef NO_SYNC
 		sync();
 #endif
 	}
 
-	pprof_finish();
-
 	PicoExit();
-	sndout_exit();
 }
 
-static void snd_write_nonblocking(int len)
+static void skip_frame(int do_audio)
 {
-	sndout_write_nb(PicoIn.sndOut, len);
-}
-
-void emu_sound_start(void)
-{
-	PicoIn.sndOut = NULL;
-
-	if (currentConfig.EmuOpt & EOPT_EN_SOUND)
-	{
-		int is_stereo = (PicoIn.opt & POPT_EN_STEREO) ? 1 : 0;
-
-		PsndRerate(Pico.m.frame_count ? 1 : 0);
-
-		printf("starting audio: %i len: %i stereo: %i, pal: %i\n",
-			PicoIn.sndRate, Pico.snd.len, is_stereo, Pico.m.pal);
-		sndout_start(PicoIn.sndRate, is_stereo);
-		PicoIn.writeSound = snd_write_nonblocking;
-		plat_update_volume(0, 0);
-		memset(sndBuffer, 0, sizeof(sndBuffer));
-		PicoIn.sndOut = sndBuffer;
-	}
-}
-
-void emu_sound_stop(void)
-{
-	sndout_stop();
-}
-
-void emu_sound_wait(void)
-{
-	sndout_wait();
-}
-
-static void emu_loop_prep(void)
-{
-	static int pal_old = -1;
-	static int filter_old = -1;
-
-	if (currentConfig.CPUclock != plat_target_cpu_clock_get())
-		plat_target_cpu_clock_set(currentConfig.CPUclock);
-
-	if (Pico.m.pal != pal_old) {
-		plat_target_lcdrate_set(Pico.m.pal);
-		pal_old = Pico.m.pal;
-	}
-
-	if (currentConfig.filter != filter_old) {
-		plat_target_hwfilter_set(currentConfig.filter);
-		filter_old = currentConfig.filter;
-	}
-
-	plat_target_gamma_set(currentConfig.gamma, 0);
-
-	pemu_loop_prep();
+	PicoSkipFrame = do_audio ? 1 : 2;
+	PicoFrame();
+	PicoSkipFrame = 0;
 }
 
 /* our tick here is 1 us right now */
@@ -1355,67 +1365,65 @@ static void emu_loop_prep(void)
 
 void emu_loop(void)
 {
+	int pframes_done;		/* "period" frames, used for sync */
 	int frames_done, frames_shown;	/* actual frames for fps counter */
-	int target_frametime_x3;
-	unsigned int timestamp_x3 = 0;
-	unsigned int timestamp_aim_x3 = 0;
-	unsigned int timestamp_fps_x3 = 0;
+	int target_fps, target_frametime;
+	unsigned int timestamp_base = 0, timestamp_fps;
 	char *notice_msg = NULL;
 	char fpsbuff[24];
-	int fskip_cnt = 0;
+	int i;
 
 	fpsbuff[0] = 0;
 
-	PicoLoopPrepare();
-
-	plat_video_loop_prepare();
-	emu_loop_prep();
-	pemu_sound_start();
+	/* make sure we are in correct mode */
+	Pico.m.dirtyPal = 1;
+	rendstatus_old = -1;
 
 	/* number of ticks per frame */
-	if (Pico.m.pal)
-		target_frametime_x3 = 3 * ms_to_ticks(1000) / 50;
-	else
-		target_frametime_x3 = 3 * ms_to_ticks(1000) / 60;
+	if (Pico.m.pal) {
+		target_fps = 50;
+		target_frametime = ms_to_ticks(1000) / 50;
+	} else {
+		target_fps = 60;
+		target_frametime = ms_to_ticks(1000) / 60 + 1;
+	}
 
+	// prepare CD buffer
+	if (PicoAHW & PAHW_MCD)
+		PicoCDBufferInit();
+	PicoLoopPrepare();
+
+	pemu_loop_prep();
+
+	timestamp_fps = get_ticks();
 	reset_timing = 1;
-	frames_done = frames_shown = 0;
+
+	frames_done = frames_shown = pframes_done = 0;
+
+	plat_video_wait_vsync();
 
 	/* loop with resync every 1 sec. */
 	while (engineState == PGS_Running)
 	{
-		int skip = 0;
-		int diff;
+		unsigned int timestamp;
+		int diff, diff_lim;
 
-		pprof_start(main);
-
+		timestamp = get_ticks();
 		if (reset_timing) {
 			reset_timing = 0;
-			plat_video_wait_vsync();
-			timestamp_aim_x3 = get_ticks() * 3;
-			timestamp_fps_x3 = timestamp_aim_x3;
-			fskip_cnt = 0;
+			timestamp_base = timestamp;
+			pframes_done = 0;
 		}
-		else if (currentConfig.EmuOpt & EOPT_NO_FRMLIMIT) {
-			timestamp_aim_x3 = get_ticks() * 3;
-		}
-
-		timestamp_x3 = get_ticks() * 3;
 
 		// show notice_msg message?
 		if (notice_msg_time != 0)
 		{
 			static int noticeMsgSum;
-			if (timestamp_x3 - ms_to_ticks(notice_msg_time) * 3
-			     > ms_to_ticks(STATUS_MSG_TIMEOUT) * 3)
-			{
+			if (timestamp - ms_to_ticks(notice_msg_time) > ms_to_ticks(STATUS_MSG_TIMEOUT)) {
 				notice_msg_time = 0;
 				plat_status_msg_clear();
-				plat_video_flip();
-				plat_status_msg_clear(); /* Do it again in case of double buffering */
 				notice_msg = NULL;
-			}
-			else {
+			} else {
 				int sum = noticeMsg[0] + noticeMsg[1] + noticeMsg[2];
 				if (sum != noticeMsgSum) {
 					plat_status_msg_clear();
@@ -1426,7 +1434,7 @@ void emu_loop(void)
 		}
 
 		// second changed?
-		if (timestamp_x3 - timestamp_fps_x3 >= ms_to_ticks(1000) * 3)
+		if (timestamp - timestamp_fps >= ms_to_ticks(1000))
 		{
 #ifdef BENCHMARK
 			static int bench = 0, bench_fps = 0, bench_fps_s = 0, bfp = 0, bf[4];
@@ -1438,97 +1446,107 @@ void emu_loop(void)
 			}
 			bench_fps += frames_shown;
 			sprintf(fpsbuff, "%02i/%02i/%02i", frames_shown, bench_fps_s, (bf[0]+bf[1]+bf[2]+bf[3])>>2);
-			printf("%s\n", fpsbuff);
 #else
-			if (currentConfig.EmuOpt & EOPT_SHOW_FPS)
-				snprintf(fpsbuff, 8, "%02i/%02i  ", frames_shown, frames_done);
+			if (currentConfig.EmuOpt & EOPT_SHOW_FPS) {
+				sprintf(fpsbuff, "%02i/%02i", frames_shown, frames_done);
+				if (fpsbuff[5] == 0) { fpsbuff[5] = fpsbuff[6] = ' '; fpsbuff[7] = 0; }
+			}
 #endif
 			frames_shown = frames_done = 0;
-			timestamp_fps_x3 += ms_to_ticks(1000) * 3;
+			timestamp_fps += ms_to_ticks(1000);
 		}
 #ifdef PFRAMES
 		sprintf(fpsbuff, "%i", Pico.m.frame_count);
 #endif
 
-		diff = timestamp_aim_x3 - timestamp_x3;
-
-		if (currentConfig.Frameskip >= 0) // frameskip enabled (or 0)
+		if (timestamp - timestamp_base >= ms_to_ticks(1000))
 		{
-			if (fskip_cnt < currentConfig.Frameskip) {
-				fskip_cnt++;
-				skip = 1;
-			}
+			if ((currentConfig.EmuOpt & EOPT_NO_FRMLIMIT) && currentConfig.Frameskip >= 0)
+				pframes_done = 0;
 			else {
-				fskip_cnt = 0;
+				pframes_done -= target_fps;
+				/* don't allow it to drift during heavy slowdowns */
+				if (pframes_done < -5) {
+					reset_timing = 1;
+					continue;
+				}
+				if (pframes_done < -2)
+					pframes_done = -2;
+			}
+			timestamp_base += ms_to_ticks(1000);
+		}
+
+		diff = timestamp - timestamp_base;
+		diff_lim = (pframes_done + 1) * target_frametime;
+
+		if (currentConfig.Frameskip >= 0) // frameskip enabled
+		{
+			for (i = 0; i < currentConfig.Frameskip; i++) {
+				emu_update_input();
+				skip_frame(1);
+				pframes_done++; frames_done++;
+				diff_lim += target_frametime;
+
+				if (!(currentConfig.EmuOpt & (EOPT_NO_FRMLIMIT|EOPT_EXT_FRMLIMIT))) {
+					timestamp = get_ticks();
+					diff = timestamp - timestamp_base;
+					if (!reset_timing && diff < diff_lim) // we are too fast
+						plat_wait_till_us(timestamp_base + diff_lim);
+				}
 			}
 		}
-		else if (diff < -target_frametime_x3)
+		else if (diff > diff_lim)
 		{
 			/* no time left for this frame - skip */
-			/* limit auto frameskip to 8 */
-			if (frames_done / 8 <= frames_shown)
-				skip = 1;
-		}
-
-		// don't go in debt too much
-		while (diff < -target_frametime_x3 * 3) {
-			timestamp_aim_x3 += target_frametime_x3;
-			diff = timestamp_aim_x3 - timestamp_x3;
+			if (diff - diff_lim >= ms_to_ticks(200)) {
+				/* if too much behind, reset instead */
+				reset_timing = 1;
+				continue;
+			}
+			emu_update_input();
+			skip_frame(diff < diff_lim + target_frametime * 2);
+			pframes_done++; frames_done++;
+			continue;
 		}
 
 		emu_update_input();
-		if (skip) {
-			int do_audio = diff > -target_frametime_x3 * 2;
-			PicoIn.skipFrame = do_audio ? 1 : 2;
-			PicoFrame();
-			PicoIn.skipFrame = 0;
-		}
-		else {
-			PicoFrame();
-			pemu_finalize_frame(fpsbuff, notice_msg);
-			frames_shown++;
-		}
-		frames_done++;
-		timestamp_aim_x3 += target_frametime_x3;
-
-		if (!skip && !flip_after_sync)
-			plat_video_flip();
+		PicoFrame();
 
 		/* frame limiter */
-		if (!skip && !reset_timing
-		    && !(currentConfig.EmuOpt & (EOPT_NO_FRMLIMIT|EOPT_EXT_FRMLIMIT)))
+		if (!reset_timing && !(currentConfig.EmuOpt & (EOPT_NO_FRMLIMIT|EOPT_EXT_FRMLIMIT)))
 		{
-			unsigned int timestamp = get_ticks();
-			diff = timestamp_aim_x3 - timestamp * 3;
+			timestamp = get_ticks();
+			diff = timestamp - timestamp_base;
 
 			// sleep or vsync if we are still too fast
-			if (diff > target_frametime_x3 && (currentConfig.EmuOpt & EOPT_VSYNC)) {
+			if (diff < diff_lim)
+			{
 				// we are too fast
-				plat_video_wait_vsync();
-				timestamp = get_ticks();
-				diff = timestamp * 3 - timestamp_aim_x3;
-			}
-			if (diff > target_frametime_x3) {
-				// still too fast
-				plat_wait_till_us(timestamp + (diff - target_frametime_x3) / 3);
+				plat_wait_till_us(timestamp_base + diff_lim - target_frametime / 4);
+				if (currentConfig.EmuOpt & EOPT_VSYNC)
+					plat_video_wait_vsync();
 			}
 		}
 
-		if (!skip && flip_after_sync)
-			plat_video_flip();
+		pemu_update_display(fpsbuff, notice_msg);
 
-		pprof_end(main);
+		pframes_done++; frames_done++; frames_shown++;
 	}
 
 	emu_set_fastforward(0);
 
 	// save SRAM
-	if ((currentConfig.EmuOpt & EOPT_EN_SRAM) && Pico.sv.changed) {
+	if ((currentConfig.EmuOpt & EOPT_EN_SRAM) && SRam.changed) {
 		plat_status_msg_busy_first("Writing SRAM/BRAM...");
 		emu_save_load_game(0, 1);
-		Pico.sv.changed = 0;
+		SRam.changed = 0;
 	}
 
 	pemu_loop_end();
-	emu_sound_stop();
+
+	// pemu_loop_end() might want to do 1 frame for bg image,
+	// so free CD buffer here
+	if (PicoAHW & PAHW_MCD)
+		PicoCDBufferFree();
 }
+

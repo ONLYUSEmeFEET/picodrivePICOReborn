@@ -1,10 +1,4 @@
 /*
- * PicoDrive
- * (C) notaz, 2008
- *
- * This work is licensed under the terms of MAME license.
- * See COPYING file in the top-level directory.
- *
  * The following ADPCM algorithm was stolen from MAME aica driver.
  * I'm quite sure it's not the right one, but it's the
  * best sounding of the ones that I tried.
@@ -50,7 +44,7 @@ PICO_INTERNAL void PicoPicoPCMReset(void)
 
 PICO_INTERNAL void PicoPicoPCMRerate(int xpcm_rate)
 {
-  stepsamples = (PicoIn.sndRate<<10)/xpcm_rate;
+  stepsamples = (PsndRate<<10)/xpcm_rate;
 }
 
 #define XSHIFT 6

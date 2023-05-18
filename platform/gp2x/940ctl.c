@@ -1,10 +1,5 @@
-/*
- * Code for communication with ARM940 and control of it.
- * (C) notaz, 2006-2009
- *
- * This work is licensed under the terms of MAME license.
- * See COPYING file in the top-level directory.
- */
+// Code for communication with ARM940 and control of it.
+// (c) Copyright 2007, Grazvydas "notaz" Ignotas
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,19 +10,17 @@
 #include <fcntl.h>
 #include <errno.h>
 
-#include "../libpicofe/input.h"
-#include "../libpicofe/gp2x/soc_mmsp2.h"
-#include "../libpicofe/gp2x/soc.h"
+#include "code940/940shared.h"
+#include "soc_mmsp2.h"
+#include "soc.h"
 #include "../common/mp3.h"
 #include "../common/arm_utils.h"
-#include "../common/menu_pico.h"
+#include "../common/menu.h"
 #include "../common/emu.h"
+#include "../common/input.h"
 #include "../../pico/pico_int.h"
 #include "../../pico/sound/ym2612.h"
 #include "../../pico/sound/mix.h"
-#include "code940/940shared.h"
-#include "plat.h"
-#include "940ctl.h"
 
 static unsigned char *shared_mem = 0;
 static _940_data_t *shared_data = 0;
@@ -124,14 +117,14 @@ int YM2612Write_940(unsigned int a, unsigned int v, int scanline)
 
 
 #define CHECK_BUSY(job) \
-	(memregs[0x3b46>>1] & (1<<(job-1)))
+	(gp2x_memregs[0x3b46>>1] & (1<<(job-1)))
 
 static void wait_busy_940(int job)
 {
 	int i;
 
 	job--;
-	for (i = 0; (memregs[0x3b46>>1] & (1<<job)) && i < 0x10000; i++)
+	for (i = 0; (gp2x_memregs[0x3b46>>1] & (1<<job)) && i < 0x10000; i++)
 		spend_cycles(8*1024); // tested to be best for mp3 dec
 	if (i < 0x10000) return;
 
@@ -140,19 +133,19 @@ static void wait_busy_940(int job)
 	for (i = 0; i < 8; i++)
 		printf("%i ", shared_ctl->vstarts[i]);
 	printf(")\n");
-	printf("irq pending flags: DUALCPU %04x, SRCPND %08x (see 26), INTPND %08x\n",
-		memregs[0x3b46>>1], memregl[0x4500>>2], memregl[0x4510>>2]);
+	printf("irq pending flags: DUALCPU %04x, SRCPND %08lx (see 26), INTPND %08lx\n",
+		gp2x_memregs[0x3b46>>1], gp2x_memregl[0x4500>>2], gp2x_memregl[0x4510>>2]);
 	printf("last lr: %08x, lastjob: %i\n", shared_ctl->last_lr, shared_ctl->lastjob);
 	printf("trying to interrupt..\n");
-	memregs[0x3B3E>>1] = 0xffff;
-	for (i = 0; memregs[0x3b46>>1] && i < 0x10000; i++)
+	gp2x_memregs[0x3B3E>>1] = 0xffff;
+	for (i = 0; gp2x_memregs[0x3b46>>1] && i < 0x10000; i++)
 		spend_cycles(8*1024);
 	printf("i = 0x%x\n", i);
-	printf("irq pending flags: DUALCPU %04x, SRCPND %08x (see 26), INTPND %08x\n",
-		memregs[0x3b46>>1], memregl[0x4500>>2], memregl[0x4510>>2]);
+	printf("irq pending flags: DUALCPU %04x, SRCPND %08lx (see 26), INTPND %08lx\n",
+		gp2x_memregs[0x3b46>>1], gp2x_memregl[0x4500>>2], gp2x_memregl[0x4510>>2]);
 	printf("last lr: %08x, lastjob: %i\n", shared_ctl->last_lr, shared_ctl->lastjob);
 
-	menu_update_msg("940 crashed, too much overclock?");
+	me_update_msg("940 crashed, too much overclock?");
 	engineState = PGS_Menu;
 	crashed_940 = 1;
 }
@@ -167,9 +160,9 @@ static void add_job_940(int job)
 
 	// generate interrupt for this job
 	job--;
-	memregs[(0x3B20+job*2)>>1] = 1;
+	gp2x_memregs[(0x3B20+job*2)>>1] = 1;
 
-//	printf("added %i, pending %04x\n", job+1, memregs[0x3b46>>1]);
+//	printf("added %i, pending %04x\n", job+1, gp2x_memregs[0x3b46>>1]);
 }
 
 
@@ -282,25 +275,21 @@ void sharedmem940_finish(void)
 }
 
 
+extern char **g_argv;
+
 void YM2612Init_940(int baseclock, int rate)
 {
-	static int oldrate;
-
-	// HACK
-	if (Pico.m.frame_count > 0 && !crashed_940 && rate == oldrate)
-		return;
-
 	printf("YM2612Init_940()\n");
 	printf("Mem usage: shared_data: %i, shared_ctl: %i\n", sizeof(*shared_data), sizeof(*shared_ctl));
 
 	reset940(1, 2);
 	pause940(1);
 
-	memregs[0x3B40>>1] = 0;      // disable DUALCPU interrupts for 920
-	memregs[0x3B42>>1] = 1;      // enable  DUALCPU interrupts for 940
+	gp2x_memregs[0x3B40>>1] = 0;      // disable DUALCPU interrupts for 920
+	gp2x_memregs[0x3B42>>1] = 1;      // enable  DUALCPU interrupts for 940
 
-	memregl[0x4504>>2] = 0;        // make sure no FIQs will be generated
-	memregl[0x4508>>2] = ~(1<<26); // unmask DUALCPU ints in the undocumented 940's interrupt controller
+	gp2x_memregl[0x4504>>2] = 0;        // make sure no FIQs will be generated
+	gp2x_memregl[0x4508>>2] = ~(1<<26); // unmask DUALCPU ints in the undocumented 940's interrupt controller
 
 
 	if (crashed_940)
@@ -318,7 +307,7 @@ void YM2612Init_940(int baseclock, int rate)
 			text_out16(10, 100, "failed to open required file:");
 			text_out16(10, 110, CODE940_FILE);
 			gp2x_video_flip2();
-			in_menu_wait(PBTN_MOK|PBTN_MBACK, NULL, 100);
+			in_menu_wait(PBTN_MOK|PBTN_MBACK, 100);
 			printf("failed to open %s\n", binpath);
 			exit(1);
 		}
@@ -343,11 +332,11 @@ void YM2612Init_940(int baseclock, int rate)
 
 	internal_reset();
 
-	loaded_mp3 = NULL;
+	loaded_mp3 = 0;
 
-	memregs[0x3B46>>1] = 0xffff; // clear pending DUALCPU interrupts for 940
-	memregl[0x4500>>2] = 0xffffffff; // clear pending IRQs in SRCPND
-	memregl[0x4510>>2] = 0xffffffff; // clear pending IRQs in INTPND
+	gp2x_memregs[0x3B46>>1] = 0xffff; // clear pending DUALCPU interrupts for 940
+	gp2x_memregl[0x4500>>2] = 0xffffffff; // clear pending IRQs in SRCPND
+	gp2x_memregl[0x4510>>2] = 0xffffffff; // clear pending IRQs in INTPND
 
 	/* start the 940 */
 	reset940(0, 2);
@@ -359,8 +348,6 @@ void YM2612Init_940(int baseclock, int rate)
 	shared_ctl->baseclock = baseclock;
 	shared_ctl->rate = rate;
 	add_job_940(JOB940_INITALL);
-
-	oldrate = rate;
 }
 
 
@@ -391,7 +378,7 @@ int YM2612UpdateOne_940(int *buffer, int length, int stereo, int is_buf_empty)
 	ym_active_chs = shared_ctl->ym_active_chs;
 
 	// mix in ym buffer. is_buf_empty means nobody mixed there anything yet and it may contain trash
-	if (is_buf_empty && ym_active_chs) memcpy(buffer, ym_buf, length << (stereo + 2));
+	if (is_buf_empty && ym_active_chs) memcpy32(buffer, ym_buf, length<<stereo);
 	else memset32(buffer, 0, length<<stereo);
 
 	if (shared_ctl->writebuffsel == 1) {
@@ -402,9 +389,9 @@ int YM2612UpdateOne_940(int *buffer, int length, int stereo, int is_buf_empty)
 	writebuff_ptr = 0;
 
 	/* predict sample counter for next frame */
-	if (Pico.snd.len_e_add) {
-		length = Pico.snd.len;
-		if (Pico.snd.len_e_cnt + Pico.snd.len_e_add >= 0x10000) length++;
+	if (PsndLen_exc_add) {
+		length = PsndLen;
+		if (PsndLen_exc_cnt + PsndLen_exc_add >= 0x10000) length++;
 	}
 
 	/* give 940 ym job */
@@ -420,82 +407,124 @@ int YM2612UpdateOne_940(int *buffer, int length, int stereo, int is_buf_empty)
 
 /***********************************************************/
 
-// FIXME: double buffering no longer used..
+static int mp3_samples_ready = 0, mp3_buffer_offs = 0;
+static int mp3_play_bufsel = 0, mp3_job_started = 0;
 
-int mp3dec_decode(FILE *f, int *file_pos, int file_len)
+void mp3_update(int *buffer, int length, int stereo)
 {
-	if (!(PicoIn.opt & POPT_EXT_FM)) {
-		//mp3_update_local(buffer, length, stereo);
-		return 0;
+	int length_mp3;
+
+	if (!(PicoOpt & POPT_EXT_FM)) {
+		mp3_update_local(buffer, length, stereo);
+		return;
 	}
 
 	// check if playback was started, track not ended
-	if (loaded_mp3 == NULL || shared_ctl->mp3_offs >= shared_ctl->mp3_len) {
-		*file_pos = file_len;
-		return 1;
-	}
+	if (loaded_mp3 == NULL || shared_ctl->mp3_offs >= shared_ctl->mp3_len)
+		return;
+
+	length_mp3 = length;
+	if (PsndRate == 22050) length_mp3 <<= 1;	// mp3s are locked to 44100Hz stereo
+	else if (PsndRate == 11025) length_mp3 <<= 2;	// so make length 44100ish
 
 	/* do we have to wait? */
-	if (CHECK_BUSY(JOB940_MP3DECODE))
-		wait_busy_940(JOB940_MP3DECODE);
-
-	memcpy(cdda_out_buffer,
-		shared_data->mp3_buffer[shared_ctl->mp3_buffsel],
-		sizeof(cdda_out_buffer));
-
-	*file_pos = shared_ctl->mp3_offs;
-
-	if (shared_ctl->mp3_offs < shared_ctl->mp3_len) {
-		// ask to decode more
-		//shared_ctl->mp3_buffsel ^= 1;
-		add_job_940(JOB940_MP3DECODE);
+	if (mp3_job_started && mp3_samples_ready < length_mp3) {
+		if (CHECK_BUSY(JOB940_MP3DECODE)) wait_busy_940(JOB940_MP3DECODE);
+		mp3_job_started = 0;
+		mp3_samples_ready += 1152;
 	}
 
-	return 0;
+	/* mix mp3 data, only stereo */
+	if (mp3_samples_ready >= length_mp3)
+	{
+		int shr = 0;
+		void (*mix_samples)(int *dest_buf, short *mp3_buf, int count) = mix_16h_to_32;
+		if (PsndRate == 22050) { mix_samples = mix_16h_to_32_s1; shr = 1; }
+		else if (PsndRate == 11025) { mix_samples = mix_16h_to_32_s2; shr = 2; }
+
+		if (1152 - mp3_buffer_offs >= length_mp3) {
+			mix_samples(buffer, shared_data->mp3_buffer[mp3_play_bufsel] + mp3_buffer_offs*2, length<<1);
+
+			mp3_buffer_offs += length_mp3;
+		} else {
+			// collect samples from both buffers..
+			int left = 1152 - mp3_buffer_offs;
+			if (mp3_play_bufsel == 0)
+			{
+				mix_samples(buffer, shared_data->mp3_buffer[0] + mp3_buffer_offs*2, length<<1);
+				mp3_buffer_offs = length_mp3 - left;
+				mp3_play_bufsel = 1;
+			} else {
+				mix_samples(buffer, shared_data->mp3_buffer[1] + mp3_buffer_offs*2, (left>>shr)<<1);
+				mp3_buffer_offs = length_mp3 - left;
+				mix_samples(buffer + ((left>>shr)<<1),
+					shared_data->mp3_buffer[0], (mp3_buffer_offs>>shr)<<1);
+				mp3_play_bufsel = 0;
+			}
+		}
+		mp3_samples_ready -= length_mp3;
+	}
+
+	// ask to decode more if we already can
+	if (!mp3_job_started)
+	{
+		mp3_job_started = 1;
+		shared_ctl->mp3_buffsel ^= 1;
+		add_job_940(JOB940_MP3DECODE);
+	}
 }
 
-int mp3dec_start(FILE *f, int fpos_start)
+
+void mp3_start_play(FILE *f, int pos) // pos is 0-1023
 {
-	if (!(PicoIn.opt & POPT_EXT_FM)) {
-		//mp3_start_play_local(f, pos);
-		return -1;
+	int byte_offs = 0;
+
+	if (!(PicoOpt & POPT_EN_MCD_CDDA) || f == NULL)
+		return;
+
+	if (!(PicoOpt & POPT_EXT_FM)) {
+		mp3_start_play_local(f, pos);
+		return;
 	}
 
 	if (loaded_mp3 != f)
 	{
-		if (PicoIn.osdMessage != NULL)
+		if (PicoMessage != NULL)
 		{
 			fseek(f, 0, SEEK_END);
 			if (ftell(f) > 2*1024*1024)
-				PicoIn.osdMessage("Loading MP3...");
+				PicoMessage("Loading MP3...");
 		}
 		fseek(f, 0, SEEK_SET);
 		fread(mp3_mem, 1, MP3_SIZE_MAX, f);
-		if (!feof(f))
-			printf("Warning: mp3 was too large, not all data loaded.\n");
+		if (!feof(f)) printf("Warning: mp3 was too large, not all data loaded.\n");
 		shared_ctl->mp3_len = ftell(f);
 		loaded_mp3 = f;
 
-		// as we are going to change 940's cacheable area,
-		// we must invalidate it's cache..
-		if (CHECK_BUSY(JOB940_MP3DECODE))
-			wait_busy_940(JOB940_MP3DECODE);
-		add_job_940(JOB940_INVALIDATE_DCACHE);
+		if (PicoOpt & POPT_EXT_FM) {
+			// as we are going to change 940's cacheable area, we must invalidate it's cache..
+			if (CHECK_BUSY(JOB940_MP3DECODE)) wait_busy_940(JOB940_MP3DECODE);
+			add_job_940(JOB940_INVALIDATE_DCACHE);
+		}
 		reset_timing = 1;
 	}
 
-	shared_ctl->mp3_offs = fpos_start;
-	shared_ctl->mp3_buffsel = 0;
+	// seek..
+	if (pos) {
+		byte_offs  = (shared_ctl->mp3_len << 6) >> 10;
+		byte_offs *= pos;
+		byte_offs >>= 6;
+	}
+	printf("  mp3 pos1024: %i, byte_offs %i/%i\n", pos, byte_offs, shared_ctl->mp3_len);
+
+	shared_ctl->mp3_offs = byte_offs;
+
+	// reset buffer pointers and stuff..
+	mp3_samples_ready = mp3_buffer_offs = mp3_play_bufsel = 0;
+	mp3_job_started = 0;
+	shared_ctl->mp3_buffsel = 1; // will change to 0 on first decode
 
 	add_job_940(JOB940_MP3RESET);
-	if (CHECK_BUSY(JOB940_MP3RESET))
-		wait_busy_940(JOB940_MP3RESET);
-
-	// because we decode ahea, need to start now
-	if (shared_ctl->mp3_offs < shared_ctl->mp3_len) {
-		add_job_940(JOB940_MP3DECODE);
-	}
-
-	return 0;
+	if (CHECK_BUSY(JOB940_MP3RESET)) wait_busy_940(JOB940_MP3RESET);
 }
 

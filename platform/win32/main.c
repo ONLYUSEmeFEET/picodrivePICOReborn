@@ -107,7 +107,7 @@ static HBITMAP png2hb(const char *fname, int is_480)
 
   bmem = calloc(1, is_480 ? 480*240*3 : 320*240*3);
   if (bmem == NULL) return NULL;
-  ret = readpng(bmem, fname, READPNG_24, is_480 ? 480 : 320, 240);
+  ret = readpng(bmem, fname, is_480 ? READPNG_480_24 : READPNG_320_24);
   if (ret != 0) {
     free(bmem);
     return NULL;
@@ -131,7 +131,7 @@ static HBITMAP png2hb(const char *fname, int is_480)
 static void PrepareForROM(void)
 {
   unsigned char *rom_data = NULL;
-  int i, ret, show = PicoIn.AHW & PAHW_PICO;
+  int i, ret, show = PicoAHW & PAHW_PICO;
   
   PicoGetInternal(PI_ROM, (pint_ret_t *) &rom_data);
   EnableMenuItem(mmain, 2, MF_BYPOSITION|(show ? MF_ENABLED : MF_GRAYED));
@@ -565,8 +565,8 @@ void xxinit(void)
 {
   /* in_init() must go before config, config accesses in_ fwk */
   in_init();
-  emu_prep_defconfig();
-  emu_read_config(NULL, 0);
+  pemu_prep_defconfig();
+  emu_read_config(0, 0);
   config_readlrom(PicoConfigFile);
 
   plat_init();

@@ -1,24 +1,22 @@
-/*
- * PicoDrive
- * (C) notaz, 2006-2010
- *
- * This work is licensed under the terms of MAME license.
- * See COPYING file in the top-level directory.
- */
+// (c) Copyright 2006-2009 notaz, All rights reserved.
+// Free for non-commercial use.
+
+// For commercial use, separate licencing terms must be obtained.
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
-#include "../libpicofe/input.h"
-#include "../libpicofe/plat.h"
-#include "menu_pico.h"
+#include "menu.h"
 #include "emu.h"
-#include "version.h"
-#include <cpu/debug.h>
+#include "config.h"
+#include "input.h"
+#include "plat.h"
+#include <version.h>
 
 
+extern char *PicoConfigFile;
 static int load_state_slot = -1;
 char **g_argv;
 
@@ -33,41 +31,32 @@ void parse_cmd_line(int argc, char *argv[])
 			if (strcasecmp(argv[x], "-config") == 0) {
 				if (x+1 < argc) { ++x; PicoConfigFile = argv[x]; }
 			}
-			else if (strcasecmp(argv[x], "-loadstate") == 0
-				 || strcasecmp(argv[x], "-load") == 0)
-			{
+			else if (strcasecmp(argv[x], "-loadstate") == 0) {
 				if (x+1 < argc) { ++x; load_state_slot = atoi(argv[x]); }
-			}
-			else if (strcasecmp(argv[x], "-pdb") == 0) {
-				if (x+1 < argc) { ++x; pdb_command(argv[x]); }
-			}
-			else if (strcasecmp(argv[x], "-pdb_connect") == 0) {
-				if (x+2 < argc) { pdb_net_connect(argv[x+1], argv[x+2]); x += 2; }
 			}
 			else {
 				unrecognized = 1;
 				break;
 			}
 		} else {
-			FILE *f = fopen(argv[x], "rb");
-			if (f) {
-				fclose(f);
-				rom_fname_reload = argv[x];
-				engineState = PGS_ReloadRom;
-			}
-			else
-				unrecognized = 1;
+			/* External Frontend: ROM Name */
+			FILE *f;
+			strncpy(rom_fname_reload, argv[x], sizeof(rom_fname_reload));
+			rom_fname_reload[sizeof(rom_fname_reload) - 1] = 0;
+			f = fopen(rom_fname_reload, "rb");
+			if (f) fclose(f);
+			else unrecognized = 1;
+			engineState = PGS_ReloadRom;
 			break;
 		}
 	}
 
 	if (unrecognized) {
-		printf("\n\n\nPicoDrive v" VERSION " (c) notaz, 2006-2009,2013\n");
+		printf("\n\n\nPicoDrive v" VERSION " (c) notaz, 2006-2009\n");
 		printf("usage: %s [options] [romfile]\n", argv[0]);
 		printf("options:\n"
 			" -config <file>    use specified config file instead of default 'config.cfg'\n"
-			" -loadstate <num>  if ROM is specified, try loading savestate slot <num>\n");
-		exit(1);
+			" -loadstate <num>  if ROM is specified, try loading slot <num>\n");
 	}
 }
 
@@ -78,14 +67,15 @@ int main(int argc, char *argv[])
 
 	plat_early_init();
 
+	/* in_init() must go before config, config accesses in_ fwk */
 	in_init();
-	//in_probe();
+	pemu_prep_defconfig();
+	emu_read_config(0, 0);
+	config_readlrom(PicoConfigFile);
 
-	plat_target_init();
 	plat_init();
-
-	emu_prep_defconfig(); // depends on input
-	emu_read_config(NULL, 0);
+	in_probe();
+	in_debug_dump();
 
 	emu_init();
 	menu_init();
@@ -148,7 +138,6 @@ int main(int argc, char *argv[])
 
 	emu_finish();
 	plat_finish();
-	plat_target_finish();
 
 	return 0;
 }

@@ -142,7 +142,6 @@
 /* Exception Vectors handled by emulation */
 #define EXCEPTION_BUS_ERROR                2 /* This one is not emulated! */
 #define EXCEPTION_ADDRESS_ERROR            3 /* This one is partially emulated (doesn't stack a proper frame yet) */
-#undef EXCEPTION_ILLEGAL_INSTRUCTION
 #define EXCEPTION_ILLEGAL_INSTRUCTION      4
 #define EXCEPTION_ZERO_DIVIDE              5
 #define EXCEPTION_CHK                      6
@@ -920,7 +919,6 @@ typedef struct
 
 	// notaz
 	sint cyc_remaining_cycles;
-	sint not_polling;
 } m68ki_cpu_core;
 
 // notaz
@@ -1624,7 +1622,7 @@ INLINE void m68ki_stack_frame_buserr(uint sr)
 /* Format 8 stack frame (68010).
  * 68010 only.  This is the 29 word bus/address error frame.
  */
-INLINE void m68ki_stack_frame_1000(uint pc, uint sr, uint vector)
+void m68ki_stack_frame_1000(uint pc, uint sr, uint vector)
 {
 	/* VERSION
      * NUMBER
@@ -1678,7 +1676,7 @@ INLINE void m68ki_stack_frame_1000(uint pc, uint sr, uint vector)
  * if the error happens at an instruction boundary.
  * PC stacked is address of next instruction.
  */
-INLINE void m68ki_stack_frame_1010(uint sr, uint vector, uint pc)
+void m68ki_stack_frame_1010(uint sr, uint vector, uint pc)
 {
 	/* INTERNAL REGISTER */
 	m68ki_push_16(0);
@@ -1725,7 +1723,7 @@ INLINE void m68ki_stack_frame_1010(uint sr, uint vector, uint pc)
  * if the error happens during instruction execution.
  * PC stacked is address of instruction in progress.
  */
-INLINE void m68ki_stack_frame_1011(uint sr, uint vector, uint pc)
+void m68ki_stack_frame_1011(uint sr, uint vector, uint pc)
 {
 	/* INTERNAL REGISTERS (18 words) */
 	m68ki_push_32(0);
@@ -1969,7 +1967,7 @@ m68k_read_memory_8(0x00ffff01);
 
 
 /* Service an interrupt request and start exception processing */
-INLINE void m68ki_exception_interrupt(uint int_level)
+void m68ki_exception_interrupt(uint int_level)
 {
 	uint vector;
 	uint sr;

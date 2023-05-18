@@ -808,7 +808,7 @@ int m68k_execute(int num_cycles)
 		// notaz
 		m68ki_trace_t1();
 
-		while(GET_CYCLES() > 0)
+		while(GET_CYCLES() >= 0)
 //		do
 		{
 			/* Set tracing accodring to T1. (T0 is done inside instruction) */
@@ -832,8 +832,6 @@ int m68k_execute(int num_cycles)
 			m68ki_exception_if_trace(); /* auto-disable (see m68kcpu.h) */
 
 			m68ki_trace_t1(); /* notaz */
-
-			m68ki_cpu_p->not_polling = 1;
 		} // while(GET_CYCLES() > 0); // notaz
 
 		/* set previous PC to current PC for the next entry into the loop */

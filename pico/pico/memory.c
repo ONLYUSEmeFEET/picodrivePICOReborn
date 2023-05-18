@@ -1,10 +1,3 @@
-/*
- * PicoDrive
- * (C) notaz, 2008
- *
- * This work is licensed under the terms of MAME license.
- * See COPYING file in the top-level directory.
- */
 #include "../pico_int.h"
 #include "../memory.h"
 #include "../sound/sn76496.h"
@@ -35,8 +28,8 @@ static u32 PicoRead8_pico(u32 a)
     {
       case 0x01: d = PicoPicohw.r1; break;
       case 0x03:
-        d  =  PicoIn.pad[0]&0x1f; // d-pad
-        d |= (PicoIn.pad[0]&0x20) << 2; // pen push -> C
+        d  =  PicoPad[0]&0x1f; // d-pad
+        d |= (PicoPad[0]&0x20) << 2; // pen push -> C
         d  = ~d;
         break;
 

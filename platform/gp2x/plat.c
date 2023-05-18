@@ -1,111 +1,29 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <linux/input.h>
+#include <stdarg.h>
 
-#include "../common/emu.h"
-#include "../common/menu_pico.h"
-#include "../common/input_pico.h"
-#include "../libpicofe/input.h"
-#include "../libpicofe/plat.h"
-#include "../libpicofe/linux/in_evdev.h"
-#include "../libpicofe/gp2x/soc.h"
-#include "../libpicofe/gp2x/plat_gp2x.h"
-#include "../libpicofe/gp2x/in_gp2x.h"
-#include "940ctl.h"
+#include "plat_gp2x.h"
+#include "soc.h"
 #include "warm.h"
-#include "plat.h"
+#include "../common/plat.h"
+#include "../common/readpng.h"
+#include "../common/menu.h"
+#include "../common/emu.h"
+#include "../linux/sndout_oss.h"
 
 #include <pico/pico.h>
 
 /* GP2X local */
-int gp2x_current_bpp;
+int default_cpu_clock;
 void *gp2x_screens[4];
 
-void (*gp2x_video_flip)(void);
-void (*gp2x_video_flip2)(void);
-void (*gp2x_video_changemode_ll)(int bpp, int is_pal);
-void (*gp2x_video_setpalette)(int *pal, int len);
-void (*gp2x_video_RGB_setscaling)(int ln_offs, int W, int H);
-void (*gp2x_video_wait_vsync)(void);
-
-static struct in_default_bind in_evdev_defbinds[] =
+void gp2x_video_changemode(int bpp)
 {
-	/* MXYZ SACB RLDU */
-	{ KEY_UP,	IN_BINDTYPE_PLAYER12, GBTN_UP },
-	{ KEY_DOWN,	IN_BINDTYPE_PLAYER12, GBTN_DOWN },
-	{ KEY_LEFT,	IN_BINDTYPE_PLAYER12, GBTN_LEFT },
-	{ KEY_RIGHT,	IN_BINDTYPE_PLAYER12, GBTN_RIGHT },
-	{ KEY_A,	IN_BINDTYPE_PLAYER12, GBTN_A },
-	{ KEY_S,	IN_BINDTYPE_PLAYER12, GBTN_B },
-	{ KEY_D,	IN_BINDTYPE_PLAYER12, GBTN_C },
-	{ KEY_ENTER,	IN_BINDTYPE_PLAYER12, GBTN_START },
-	{ KEY_BACKSLASH, IN_BINDTYPE_EMU, PEVB_MENU },
-	/* Caanoo */
-	{ BTN_TRIGGER,	IN_BINDTYPE_PLAYER12, GBTN_A },
-	{ BTN_THUMB,	IN_BINDTYPE_PLAYER12, GBTN_B },
-	{ BTN_THUMB2,	IN_BINDTYPE_PLAYER12, GBTN_C },
-	{ BTN_BASE3,	IN_BINDTYPE_PLAYER12, GBTN_START },
-	{ BTN_TOP2,	IN_BINDTYPE_EMU, PEVB_STATE_SAVE },
-	{ BTN_PINKIE,	IN_BINDTYPE_EMU, PEVB_STATE_LOAD },
-	{ BTN_BASE,	IN_BINDTYPE_EMU, PEVB_MENU },
-	{ 0, 0, 0 }
-};
+	gp2x_video_changemode_ll(bpp);
 
-static struct in_default_bind in_gp2x_defbinds[] =
-{
-	{ GP2X_BTN_UP,    IN_BINDTYPE_PLAYER12, GBTN_UP },
-	{ GP2X_BTN_DOWN,  IN_BINDTYPE_PLAYER12, GBTN_DOWN },
-	{ GP2X_BTN_LEFT,  IN_BINDTYPE_PLAYER12, GBTN_LEFT },
-	{ GP2X_BTN_RIGHT, IN_BINDTYPE_PLAYER12, GBTN_RIGHT },
-	{ GP2X_BTN_A,     IN_BINDTYPE_PLAYER12, GBTN_A },
-	{ GP2X_BTN_X,     IN_BINDTYPE_PLAYER12, GBTN_B },
-	{ GP2X_BTN_B,     IN_BINDTYPE_PLAYER12, GBTN_C },
-	{ GP2X_BTN_START, IN_BINDTYPE_PLAYER12, GBTN_START },
-	{ GP2X_BTN_Y,     IN_BINDTYPE_EMU, PEVB_SWITCH_RND },
-	{ GP2X_BTN_L,     IN_BINDTYPE_EMU, PEVB_STATE_SAVE },
-	{ GP2X_BTN_R,     IN_BINDTYPE_EMU, PEVB_STATE_LOAD },
-	{ GP2X_BTN_VOL_DOWN, IN_BINDTYPE_EMU, PEVB_VOL_DOWN },
-	{ GP2X_BTN_VOL_UP,   IN_BINDTYPE_EMU, PEVB_VOL_UP },
-	{ GP2X_BTN_SELECT,   IN_BINDTYPE_EMU, PEVB_MENU },
-	{ 0, 0, 0 }
-};
-
-static const struct menu_keymap key_pbtn_map[] =
-{
-	{ KEY_UP,	PBTN_UP },
-	{ KEY_DOWN,	PBTN_DOWN },
-	{ KEY_LEFT,	PBTN_LEFT },
-	{ KEY_RIGHT,	PBTN_RIGHT },
-	/* Caanoo */
-	{ BTN_THUMB2,	PBTN_MOK },
-	{ BTN_THUMB,	PBTN_MBACK },
-	{ BTN_TRIGGER,	PBTN_MA2 },
-	{ BTN_TOP,	PBTN_MA3 },
-	{ BTN_BASE,	PBTN_MENU },
-	{ BTN_TOP2,	PBTN_L },
-	{ BTN_PINKIE,	PBTN_R },
-	/* "normal" keyboards */
-	{ KEY_ENTER,	PBTN_MOK },
-	{ KEY_ESC,	PBTN_MBACK },
-	{ KEY_SEMICOLON,  PBTN_MA2 },
-	{ KEY_APOSTROPHE, PBTN_MA3 },
-	{ KEY_BACKSLASH,  PBTN_MENU },
-	{ KEY_LEFTBRACE,  PBTN_L },
-	{ KEY_RIGHTBRACE, PBTN_R },
-};
-
-static const struct in_pdata gp2x_evdev_pdata = {
-	.defbinds = in_evdev_defbinds,
-	.key_map = key_pbtn_map,
-	.kmap_size = sizeof(key_pbtn_map) / sizeof(key_pbtn_map[0]),
-};
-
-void gp2x_video_changemode(int bpp, int is_pal)
-{
-	gp2x_video_changemode_ll(bpp, is_pal);
-
-	gp2x_current_bpp = bpp < 0 ? -bpp : bpp;
+  	gp2x_memset_all_buffers(0, 0, 320*240*2);
+	gp2x_video_flip();
 }
 
 static void gp2x_memcpy_buffers(int buffers, void *data, int offset, int len)
@@ -147,96 +65,145 @@ void gp2x_make_fb_bufferable(int yes)
 }
 
 /* common */
+char cpu_clk_name[16] = "GP2X CPU clocks";
+
 void plat_video_menu_enter(int is_rom_loaded)
 {
-	if (gp2x_current_bpp != 16 || gp2x_dev_id == GP2X_DEV_WIZ) {
-		/* try to switch nicely avoiding glitches */
-		gp2x_video_wait_vsync();
-		memset(gp2x_screens[0], 0, 320*240*2);
-		memset(gp2x_screens[1], 0, 320*240*2);
-		gp2x_video_flip2(); // might flip to fb2/3
-		gp2x_video_flip2(); // ..so we do it again
+	if (is_rom_loaded)
+	{
+		// darken the active framebuffer
+		memset(g_screen_ptr, 0, 320*8*2);
+		menu_darken_bg((char *)g_screen_ptr + 320*8*2, 320*224, 1);
+		memset((char *)g_screen_ptr + 320*232*2, 0, 320*8*2);
 	}
 	else
-		gp2x_video_flip2();
+	{
+		char buff[256];
+
+		// should really only happen once, on startup..
+		emu_make_path(buff, "skin/background.png", sizeof(buff));
+		if (readpng(g_screen_ptr, buff, READPNG_BG) < 0)
+			memset(g_screen_ptr, 0, 320*240*2);
+	}
+
+	// copy to buffer2, switch to black
+	gp2x_memcpy_buffers((1<<2), g_screen_ptr, 0, 320*240*2);
+
+	/* try to switch nicely avoiding tearing on Wiz */
+	gp2x_video_wait_vsync();
+	memset(gp2x_screens[0], 0, 320*240*2);
+	memset(gp2x_screens[1], 0, 320*240*2);
+	gp2x_video_flip2();
+	gp2x_video_wait_vsync();
+	gp2x_video_wait_vsync();
 
 	// switch to 16bpp
-	gp2x_video_changemode_ll(16, 0);
+	gp2x_video_changemode_ll(16);
 	gp2x_video_RGB_setscaling(0, 320, 240);
 }
 
 void plat_video_menu_begin(void)
 {
-	g_menuscreen_ptr = g_screen_ptr;
+	memcpy(g_screen_ptr, gp2x_screens[2], 320*240*2);
 }
 
 void plat_video_menu_end(void)
 {
+	// FIXME
+	// gp2x_video_flush_cache();
 	gp2x_video_flip2();
 }
 
-void plat_video_menu_leave(void)
+void plat_validate_config(void)
 {
-}
+	gp2x_soc_t soc;
 
-void *plat_mem_get_for_drc(size_t size)
-{
-	return NULL;
+	soc = soc_detect();
+	if (soc != SOCID_MMSP2)
+		PicoOpt &= ~POPT_EXT_FM;
+	if (soc != SOCID_POLLUX)
+		currentConfig.EmuOpt &= ~EOPT_WIZ_TEAR_FIX;
+
+	if (currentConfig.gamma < 10 || currentConfig.gamma > 300)
+		currentConfig.gamma = 100;
+
+	if (currentConfig.CPUclock < 10 || currentConfig.CPUclock > 1024)
+		currentConfig.CPUclock = default_cpu_clock;
 }
 
 void plat_early_init(void)
 {
-	// just use gettimeofday until plat_init()
-	gp2x_get_ticks_ms = plat_get_ticks_ms_good;
-	gp2x_get_ticks_us = plat_get_ticks_us_good;
+	gp2x_soc_t soc;
+
+	soc = soc_detect();
+	switch (soc)
+	{
+	case SOCID_MMSP2:
+		default_cpu_clock = 200;
+		break;
+	case SOCID_POLLUX:
+		strcpy(cpu_clk_name, "Wiz CPU clock");
+		default_cpu_clock = 533;
+		break;
+	default:
+		fprintf(stderr, "could not recognize SoC, bailing out.\n");
+		exit(1);
+	}
 }
 
 void plat_init(void)
 {
-	warm_init();
+	gp2x_soc_t soc;
 
-	switch (gp2x_dev_id) {
-	case GP2X_DEV_GP2X:
-		sharedmem940_init();
-		vid_mmsp2_init();
+	soc = soc_detect();
+	switch (soc)
+	{
+	case SOCID_MMSP2:
+		mmsp2_init();
+		menu_plat_setup(0);
 		break;
-	case GP2X_DEV_WIZ:
-	case GP2X_DEV_CAANOO:
-		vid_pollux_init();
+	case SOCID_POLLUX:
+		pollux_init();
+		menu_plat_setup(1);
+		break;
+	default:
 		break;
 	}
 
-	g_menuscreen_w = 320;
-	g_menuscreen_h = 240;
-	g_menuscreen_pp = g_menuscreen_w;
+	warm_init();
+
 	gp2x_memset_all_buffers(0, 0, 320*240*2);
 
-	gp2x_make_fb_bufferable(1);
-
-	// use buffer2 for menubg to save mem (using only buffers 0, 1 in menu)
-	g_menubg_ptr = gp2x_screens[2];
-
-	flip_after_sync = 1;
-	gp2x_menu_init();
-
-	in_evdev_init(&gp2x_evdev_pdata);
-	in_gp2x_init(in_gp2x_defbinds);
-	in_probe();
-	plat_target_setup_input();
+	// snd
+	sndout_oss_init();
 }
 
 void plat_finish(void)
 {
+	gp2x_soc_t soc;
+
 	warm_finish();
 
-	switch (gp2x_dev_id) {
-	case GP2X_DEV_GP2X:
-		sharedmem940_finish();
-		vid_mmsp2_finish();
+	soc = soc_detect();
+	switch (soc)
+	{
+	case SOCID_MMSP2:
+		mmsp2_finish();
 		break;
-	case GP2X_DEV_WIZ:
-	case GP2X_DEV_CAANOO:
-		vid_pollux_finish();
+	case SOCID_POLLUX:
+		pollux_finish();
 		break;
 	}
+
+	sndout_oss_exit();
 }
+
+void lprintf(const char *fmt, ...)
+{
+	va_list vl;
+
+	va_start(vl, fmt);
+	vprintf(fmt, vl);
+	va_end(vl);
+}
+

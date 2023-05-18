@@ -1,31 +1,11 @@
-/* 
- * basic, incomplete SSP160x (SSP1601?) interpreter
- * with SVP memory controller emu
- *
- * Copyright (c) Gražvydas "notaz" Ignotas, 2008
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in the
- *       documentation and/or other materials provided with the distribution.
- *     * Neither the name of the organization nor the
- *       names of its contributors may be used to endorse or promote products
- *       derived from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
+// basic, incomplete SSP160x (SSP1601?) interpreter
+// with SVP memory controller emu
+
+// (c) Copyright 2008, Grazvydas "notaz" Ignotas
+// Free for non-commercial use.
+
+// For commercial use, separate licencing terms must be obtained.
+
 
 //#define USE_DEBUGGER
 /* detect ops with unimplemented/invalid fields.
@@ -233,7 +213,7 @@
 #define IJind  (((op>>6)&4)|(op&3))
 
 #define GET_PC() (PC - (unsigned short *)svp->iram_rom)
-#define GET_PPC_OFFS() ((unsigned char *)PC - svp->iram_rom - 2)
+#define GET_PPC_OFFS() ((unsigned int)PC - (unsigned int)svp->iram_rom - 2)
 #define SET_PC(d) PC = (unsigned short *)svp->iram_rom + d
 
 #define REG_READ(r) (((r) <= 4) ? ssp->gr[r].h : read_handlers[r]())
@@ -474,8 +454,6 @@ static int get_inc(int mode)
 
 static u32 pm_io(int reg, int write, u32 d)
 {
-	unsigned int *pmac;
-
 	if (ssp->emu_status & SSP_PMC_SET)
 	{
 		// this MUST be blind r or w
@@ -486,8 +464,7 @@ static u32 pm_io(int reg, int write, u32 d)
 			return 0;
 		}
 		elprintf(EL_SVP, "PM%i (%c) set to %08x @ %04x", reg, write ? 'w' : 'r', rPMC.v, GET_PPC_OFFS());
-		pmac = write ? ssp->pmac_write : ssp->pmac_read;
-		pmac[reg] = rPMC.v;
+		ssp->pmac_read[write ? reg + 6 : reg] = rPMC.v;
 		ssp->emu_status &= ~SSP_PMC_SET;
 		if ((rPMC.v & 0x7fffff) == 0x1c8000 || (rPMC.v & 0x7fffff) == 0x1c8240) {
 			elprintf(EL_SVP, "ssp IRAM copy from %06x to %04x", (ssp->RAM1[0]-1)<<1, (rPMC.v&0x7fff)<<1);
@@ -576,8 +553,7 @@ static u32 pm_io(int reg, int write, u32 d)
 		}
 
 		// PMC value corresponds to last PMR accessed (not sure).
-		pmac = write ? ssp->pmac_write : ssp->pmac_read;
-		rPMC.v = pmac[reg];
+		rPMC.v = ssp->pmac_read[write ? reg + 6 : reg];
 
 		return d;
 	}
@@ -671,14 +647,14 @@ static void write_XST(u32 d)
 static u32 read_PM4(void)
 {
 	u32 d = pm_io(4, 0, 0);
-
+/* TODO?
 	if (d == 0) {
 		switch (GET_PPC_OFFS()) {
 			case 0x0854: ssp->emu_status |= SSP_WAIT_30FE08; elprintf(EL_SVP, "det TIGHT loop: [30fe08]"); break;
 			case 0x4f12: ssp->emu_status |= SSP_WAIT_30FE06; elprintf(EL_SVP, "det TIGHT loop: [30fe06]"); break;
 		}
 	}
-
+*/
 	if (d != (u32)-1) return d;
 	// can be removed?
 	elprintf(EL_SVP|EL_ANOMALY, "PM4 raw r %04x @ %04x", rPM4, GET_PPC_OFFS());

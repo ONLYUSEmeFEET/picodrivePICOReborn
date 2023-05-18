@@ -1,29 +1,28 @@
+
 # you may or may not need to change this
 #devkit_path = x:/stuff/dev/devkitgp2x/
-devkit_path ?= $(HOME)/opt/devkitGP2X/
+devkit_path = /usr/local/devkitPro/devkitGP2X/
 lgcc_path = $(devkit_path)lib/gcc/arm-linux/4.0.3/
-CROSS = arm-linux-
+export CROSS = arm-linux-
 #CROSS = $(devkit_path)bin/arm-linux-
 
 # settings
 #up = 1
 
-CFLAGS += -O2 -Wall -fomit-frame-pointer -fstrict-aliasing -ffast-math
-CFLAGS += -I../.. -I. -D__GP2X__ -DARM
-CFLAGS += -mcpu=arm940t -mtune=arm940t
-LDFLAGS = -static -s -e code940 -Ttext 0x0 -L$(lgcc_path) -lgcc
-
+DEFINC = -I../.. -I. -D__GP2X__ -DARM
+# -ftracer
+COPT_COMMON = -static -s -O2 -Wall -fomit-frame-pointer -fstrict-aliasing -ffast-math
+CFLAGS = $(COPT_COMMON) $(DEFINC) -mcpu=arm940t -mtune=arm940t
 GCC = $(CROSS)gcc
 STRIP = $(CROSS)strip
 AS = $(CROSS)as
 LD = $(CROSS)ld
 OBJCOPY = $(CROSS)objcopy
 
-vpath %.c = ../../common
-
 BIN = pico940_v3.bin
 
 all: $(BIN)
+
 
 .c.o:
 	@echo ">>>" $<
@@ -36,7 +35,7 @@ all: $(BIN)
 # stuff for 940 core
 
 # init, emu_control, emu
-OBJS940 += 940init.o 940.o 940ym2612.o memcpy.o misc_arm.o mp3.o
+OBJS940 += 940init.o 940.o 940ym2612.o memcpy.o misc_arm.o
 # the asm code seems to be faster when run on 920, but not on 940 for some reason
 # OBJS940 += ../../Pico/sound/ym2612_asm.o
 
@@ -51,7 +50,7 @@ $(BIN) : code940.elf
 
 code940.elf : $(OBJS940) ../../common/helix/$(CROSS)helix-mp3.a
 	@echo ">>>" $@
-	$(LD) $^ $(LDFLAGS) -o $@ -Map code940.map
+	$(LD) -static -e code940 -Ttext 0x0 $^ -L$(lgcc_path) -lgcc -o $@ -Map code940.map
 
 940ym2612.o : ../../../pico/sound/ym2612.c
 	@echo ">>>" $@
@@ -79,7 +78,6 @@ tidy:
 	$(RM) code940.elf $(OBJS940) code940.map
 
 
-##
 OBJSMP3T = mp3test.o ../gp2x.o ../asmutils.o ../usbjoy.o
 
 mp3test.gpe : $(OBJSMP3T) ../helix/helix_mp3.a
@@ -90,3 +88,10 @@ mp3test.gpe : $(OBJSMP3T) ../helix/helix_mp3.a
 cleanmp3test:
 	$(RM) $(OBJSMP3T) mp3test.gpe
 
+# uClibc/e_pow.o : uClibc/e_pow.c
+#	@echo $<
+#	@$(GCC) $(CFLAGS) -fno-profile-generate -c $< -o $@
+
+# uClibc/e_sqrt.o : uClibc/e_sqrt.c
+#	@echo $<
+#	@$(GCC) $(CFLAGS) -fno-profile-generate -c $< -o $@

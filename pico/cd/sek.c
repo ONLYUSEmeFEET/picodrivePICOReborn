@@ -1,16 +1,11 @@
-/*
- * PicoDrive
- * (C) notaz, 2007
- *
- * This work is licensed under the terms of MAME license.
- * See COPYING file in the top-level directory.
- */
+// (c) Copyright 2007 notaz, All rights reserved.
+
 
 #include "../pico_int.h"
 
 
-unsigned int SekCycleCntS68k;
-unsigned int SekCycleAimS68k;
+int SekCycleCntS68k=0; // cycles done in this frame
+int SekCycleAimS68k=0; // cycle aim
 
 
 /* context */
@@ -57,7 +52,10 @@ static void SekResetAckS68k(void)
 
 static int SekUnrecognizedOpcodeS68k(void)
 {
-  elprintf(EL_ANOMALY, "Unrecognized Opcode @ %06x", SekPcS68k);
+  unsigned int pc, op;
+  pc = SekPcS68k;
+  op = PicoCpuCS68k.read16(pc);
+  elprintf(EL_ANOMALY, "Unrecognized Opcode %04x @ %06x", op, pc);
   //exit(1);
   return 0;
 }
@@ -117,10 +115,15 @@ PICO_INTERNAL void SekInitS68k(void)
   }
 #endif
 #ifdef EMU_F68K
-  memset(&PicoCpuFS68k, 0, sizeof(PicoCpuFS68k));
-  fm68k_init();
-  PicoCpuFS68k.iack_handler = SekIntAckFS68k;
-  PicoCpuFS68k.sr = 0x2704; // Z flag
+  {
+    void *oldcontext = g_m68kcontext;
+    g_m68kcontext = &PicoCpuFS68k;
+    memset(&PicoCpuFS68k, 0, sizeof(PicoCpuFS68k));
+    fm68k_init();
+    PicoCpuFS68k.iack_handler = SekIntAckFS68k;
+    PicoCpuFS68k.sr = 0x2704; // Z flag
+    g_m68kcontext = oldcontext;
+  }
 #endif
 }
 
@@ -144,7 +147,12 @@ PICO_INTERNAL int SekResetS68k(void)
   }
 #endif
 #ifdef EMU_F68K
-  fm68k_reset(&PicoCpuFS68k);
+  {
+    void *oldcontext = g_m68kcontext;
+    g_m68kcontext = &PicoCpuFS68k;
+    fm68k_reset();
+    g_m68kcontext = oldcontext;
+  }
 #endif
 
   return 0;
@@ -168,8 +176,10 @@ PICO_INTERNAL int SekInterruptS68k(int irq)
   PicoCpuCS68k.irq=real_irq;
 #endif
 #ifdef EMU_M68K
-  // avoid m68k_set_irq() for delaying to work
-  PicoCpuMS68k.int_level = real_irq << 8;
+  void *oldcontext = m68ki_cpu_p;
+  m68k_set_context(&PicoCpuMS68k);
+  m68k_set_irq(real_irq);
+  m68k_set_context(oldcontext);
 #endif
 #ifdef EMU_F68K
   PicoCpuFS68k.interrupts[0]=real_irq;
@@ -177,17 +187,3 @@ PICO_INTERNAL int SekInterruptS68k(int irq)
   return 0;
 }
 
-void SekInterruptClearS68k(int irq)
-{
-  int level_new = new_irq_level(irq);
-
-#ifdef EMU_C68K
-  PicoCpuCS68k.irq = level_new;
-#endif
-#ifdef EMU_M68K
-  CPU_INT_LEVEL = level_new << 8;
-#endif
-#ifdef EMU_F68K
-  PicoCpuFS68k.interrupts[0] = level_new;
-#endif
-}

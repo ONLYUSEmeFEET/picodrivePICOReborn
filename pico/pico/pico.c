@@ -1,10 +1,3 @@
-/*
- * PicoDrive
- * (C) notaz, 2008
- *
- * This work is licensed under the terms of MAME license.
- * See COPYING file in the top-level directory.
- */
 #include "../pico_int.h"
 
 // x: 0x03c - 0x19d
@@ -23,7 +16,7 @@ PICO_INTERNAL void PicoReratePico(void)
 {
   int rate = guessed_rates[PicoPicohw.r12 & 7];
   if (Pico.m.pal)
-       fifo_bytes_line = (rate<<16)/50/313/2;
+       fifo_bytes_line = (rate<<16)/50/312/2;
   else fifo_bytes_line = (rate<<16)/60/262/2;
   PicoPicoPCMRerate(rate);
 }
@@ -86,7 +79,7 @@ PICO_INTERNAL void PicoInitPico(void)
   PicoLineHook = PicoLinePico;
   PicoResetHook = PicoResetPico;
 
-  PicoIn.AHW = PAHW_PICO;
+  PicoAHW = PAHW_PICO;
   memset(&PicoPicohw, 0, sizeof(PicoPicohw));
   PicoPicohw.pen_pos[0] = 0x03c + 320/2;
   PicoPicohw.pen_pos[1] = 0x200 + 240/2;

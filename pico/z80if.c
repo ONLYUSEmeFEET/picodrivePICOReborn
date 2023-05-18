@@ -1,85 +1,77 @@
-/*
- * PicoDrive
- * (C) notaz, 2007-2010
- *
- * This work is licensed under the terms of MAME license.
- * See COPYING file in the top-level directory.
- */
-
-#include <stddef.h>
 #include "pico_int.h"
-#include "memory.h"
+#include "sound/sn76496.h"
 
-uptr z80_read_map [0x10000 >> Z80_MEM_SHIFT];
-uptr z80_write_map[0x10000 >> Z80_MEM_SHIFT];
+#define Z80_MEM_SHIFT 13
+
+unsigned long z80_read_map [0x10000 >> Z80_MEM_SHIFT];
+unsigned long z80_write_map[0x10000 >> Z80_MEM_SHIFT];
+
+#ifdef _USE_MZ80
+
+// memhandlers for mz80 core
+unsigned char mz80_read(UINT32 a,  struct MemoryReadByte *w)  { return z80_read(a); }
+void mz80_write(UINT32 a, UINT8 d, struct MemoryWriteByte *w) { z80_write(d, a); }
+
+// structures for mz80 core
+static struct MemoryReadByte mz80_mem_read[]=
+{
+  {0x0000,0xffff,mz80_read},
+  {(UINT32) -1,(UINT32) -1,NULL}
+};
+static struct MemoryWriteByte mz80_mem_write[]=
+{
+  {0x0000,0xffff,mz80_write},
+  {(UINT32) -1,(UINT32) -1,NULL}
+};
+static struct z80PortRead mz80_io_read[] ={
+  {(UINT16) -1,(UINT16) -1,NULL}
+};
+static struct z80PortWrite mz80_io_write[]={
+  {(UINT16) -1,(UINT16) -1,NULL}
+};
+
+int mz80_run(int cycles)
+{
+  int ticks_pre = mz80GetElapsedTicks(0);
+  mz80exec(cycles);
+  return mz80GetElapsedTicks(0) - ticks_pre;
+}
+
+#endif
 
 #ifdef _USE_DRZ80
-// this causes trouble in some cases, like doukutsu putting sp in bank area
-// no perf difference for most, upto 1-2% for some others
-//#define FAST_Z80SP
-
 struct DrZ80 drZ80;
-
-static void drz80_load_pcsp(u32 pc, u32 sp)
-{
-  drZ80.Z80PC_BASE = z80_read_map[pc >> Z80_MEM_SHIFT];
-  if (drZ80.Z80PC_BASE & (1<<31)) {
-    elprintf(EL_STATUS|EL_ANOMALY, "load_pcsp: bad PC: %04x", pc);
-    drZ80.Z80PC_BASE = drZ80.Z80PC = z80_read_map[0];
-  } else {
-    drZ80.Z80PC_BASE <<= 1;
-    drZ80.Z80PC = drZ80.Z80PC_BASE + pc;
-  }
-  drZ80.Z80SP = sp;
-#ifdef FAST_Z80SP
-  drZ80.Z80SP_BASE = z80_read_map[sp >> Z80_MEM_SHIFT];
-  if (drZ80.Z80SP_BASE & (1<<31)) {
-    elprintf(EL_STATUS|EL_ANOMALY, "load_pcsp: bad SP: %04x", sp);
-    drZ80.Z80SP_BASE = z80_read_map[0];
-    drZ80.Z80SP = drZ80.Z80SP_BASE + (1 << Z80_MEM_SHIFT);
-  } else {
-    drZ80.Z80SP_BASE <<= 1;
-    drZ80.Z80SP = drZ80.Z80SP_BASE + sp;
-  }
 #endif
-}
 
-// called only if internal xmap rebase fails
-static unsigned int dz80_rebase_pc(unsigned short pc)
+
+PICO_INTERNAL void z80_init(void)
 {
-  elprintf(EL_STATUS|EL_ANOMALY, "dz80_rebase_pc: fail on %04x", pc);
-  drZ80.Z80PC_BASE = z80_read_map[0] << 1;
-  return drZ80.Z80PC_BASE;
-}
+#ifdef _USE_MZ80
+  struct mz80context z80;
 
-static void dz80_noop_irq_ack(void) {}
+  // z80
+  mz80init();
+  // Modify the default context
+  mz80GetContext(&z80);
 
-#ifdef FAST_Z80SP
-static u32 drz80_sp_base;
+  // point mz80 stuff
+  z80.z80Base=Pico.zram;
+  z80.z80MemRead=mz80_mem_read;
+  z80.z80MemWrite=mz80_mem_write;
+  z80.z80IoRead=mz80_io_read;
+  z80.z80IoWrite=mz80_io_write;
 
-static unsigned int dz80_rebase_sp(unsigned short sp)
-{
-  elprintf(EL_STATUS|EL_ANOMALY, "dz80_rebase_sp: fail on %04x", sp);
-  drZ80.Z80SP_BASE = z80_read_map[drz80_sp_base >> Z80_MEM_SHIFT] << 1;
-  return drZ80.Z80SP_BASE + (1 << Z80_MEM_SHIFT) - 0x100;
-}
-#else
-#define dz80_rebase_sp NULL
+  mz80SetContext(&z80);
 #endif
-#endif // _USE_DRZ80
-
-
-void z80_init(void)
-{
 #ifdef _USE_DRZ80
   memset(&drZ80, 0, sizeof(drZ80));
-  drZ80.z80_rebasePC = dz80_rebase_pc;
-  drZ80.z80_rebaseSP = dz80_rebase_sp;
-  drZ80.z80_read8    = (void *)z80_read_map;
-  drZ80.z80_read16   = NULL;
-  drZ80.z80_write8   = (void *)z80_write_map;
-  drZ80.z80_write16  = NULL;
-  drZ80.z80_irq_callback = NULL;
+  drZ80.z80_rebasePC=NULL; // unused, handled by xmap
+  drZ80.z80_rebaseSP=NULL;
+  drZ80.z80_read8   =(void *)z80_read_map;
+  drZ80.z80_read16  =NULL;
+  drZ80.z80_write8  =(void *)z80_write_map;
+  drZ80.z80_write16 =NULL;
+  drZ80.z80_irq_callback=NULL;
 #endif
 #ifdef _USE_CZ80
   memset(&CZ80, 0, sizeof(CZ80));
@@ -89,191 +81,117 @@ void z80_init(void)
 #endif
 }
 
-void z80_reset(void)
+PICO_INTERNAL void z80_reset(void)
 {
+#ifdef _USE_MZ80
+  mz80reset();
+#endif
 #ifdef _USE_DRZ80
-  drZ80.Z80I = 0;
-  drZ80.Z80IM = 0;
-  drZ80.Z80IF = 0;
-  drZ80.z80irqvector = 0xff0000; // RST 38h
-  drZ80.Z80PC_BASE = drZ80.Z80PC = z80_read_map[0] << 1;
-  // others not changed, undefined on cold boot
-/*
+  memset(&drZ80, 0, 0x54);
   drZ80.Z80F  = (1<<2);  // set ZFlag
   drZ80.Z80F2 = (1<<2);  // set ZFlag
   drZ80.Z80IX = 0xFFFF << 16;
   drZ80.Z80IY = 0xFFFF << 16;
-*/
-#ifdef FAST_Z80SP
+  drZ80.Z80IM = 0; // 1?
+  drZ80.z80irqvector = 0xff0000; // RST 38h
+  drZ80.Z80PC_BASE = drZ80.Z80PC = z80_read_map[0] << 1;
   // drZ80 is locked in single bank
-  drz80_sp_base = (PicoIn.AHW & PAHW_SMS) ? 0xc000 : 0x0000;
-  drZ80.Z80SP_BASE = z80_read_map[drz80_sp_base >> Z80_MEM_SHIFT] << 1;
-#endif
-  drZ80.z80_irq_callback = NULL; // use auto-clear
-  if (PicoIn.AHW & PAHW_SMS) {
-    drZ80.Z80SP = drZ80.Z80SP_BASE + 0xdff0; // simulate BIOS
-    drZ80.z80_irq_callback = dz80_noop_irq_ack;
-  }
-  // XXX: since we use direct SP pointer, it might make sense to force it to RAM,
-  // but we'll rely on built-in stack protection for now
+  drZ80.Z80SP_BASE = ((PicoAHW & PAHW_SMS) ?
+    z80_read_map[0xc000 >> Z80_MEM_SHIFT] : z80_read_map[0]) << 1;
+//  drZ80.Z80SP = drZ80.z80_rebaseSP(0x2000); // 0xf000 ?
 #endif
 #ifdef _USE_CZ80
   Cz80_Reset(&CZ80);
-  if (PicoIn.AHW & PAHW_SMS)
-    Cz80_Set_Reg(&CZ80, CZ80_SP, 0xdff0);
+  Cz80_Set_Reg(&CZ80, CZ80_IX, 0xffff);
+  Cz80_Set_Reg(&CZ80, CZ80_IY, 0xffff);
+  Cz80_Set_Reg(&CZ80, CZ80_SP, 0x2000);
 #endif
 }
 
-struct z80sr_main {
-  u8 a, f;
-  u8 b, c;
-  u8 d, e;
-  u8 h, l;
-};
-
-struct z80_state {
-  char magic[4];
-  // regs
-  struct z80sr_main m; // main regs
-  struct z80sr_main a; // alt (') regs
-  u8  i, r;
-  u16 ix, iy;
-  u16 sp;
-  u16 pc;
-  // other
-  u8 halted;
-  u8 iff1, iff2;
-  u8 im;            // irq mode
-  u8 irq_pending;   // irq line level, 1 if active
-  u8 irq_vector[3]; // up to 3 byte vector for irq mode0 handling
-  u8 reserved[8];
-};
-
-void z80_pack(void *data)
+// XXX TODO: should better use universal z80 save format
+PICO_INTERNAL void z80_pack(unsigned char *data)
 {
-  struct z80_state *s = data;
-  memset(data, 0, Z80_STATE_SIZE);
-  strcpy(s->magic, "Z80");
-#if defined(_USE_DRZ80)
-  #define DRR8(n)   (drZ80.Z80##n >> 24)
-  #define DRR16(n)  (drZ80.Z80##n >> 16)
-  #define DRR16H(n) (drZ80.Z80##n >> 24)
-  #define DRR16L(n) ((drZ80.Z80##n >> 16) & 0xff)
-  s->m.a = DRR8(A);     s->m.f = drZ80.Z80F;
-  s->m.b = DRR16H(BC);  s->m.c = DRR16L(BC);
-  s->m.d = DRR16H(DE);  s->m.e = DRR16L(DE);
-  s->m.h = DRR16H(HL);  s->m.l = DRR16L(HL);
-  s->a.a = DRR8(A2);    s->a.f = drZ80.Z80F2;
-  s->a.b = DRR16H(BC2); s->a.c = DRR16L(BC2);
-  s->a.d = DRR16H(DE2); s->a.e = DRR16L(DE2);
-  s->a.h = DRR16H(HL2); s->a.l = DRR16L(HL2);
-  s->i = DRR8(I);       s->r = drZ80.spare;
-  s->ix = DRR16(IX);    s->iy = DRR16(IY);
-  s->sp = drZ80.Z80SP - drZ80.Z80SP_BASE;
-  s->pc = drZ80.Z80PC - drZ80.Z80PC_BASE;
-  s->halted = !!(drZ80.Z80IF & 4);
-  s->iff1 = !!(drZ80.Z80IF & 1);
-  s->iff2 = !!(drZ80.Z80IF & 2);
-  s->im = drZ80.Z80IM;
-  s->irq_pending = !!drZ80.Z80_IRQ;
-  s->irq_vector[0] = drZ80.z80irqvector >> 16;
-  s->irq_vector[1] = drZ80.z80irqvector >> 8;
-  s->irq_vector[2] = drZ80.z80irqvector;
+#if defined(_USE_MZ80)
+  struct mz80context mz80;
+  *(int *)data = 0x00005A6D; // "mZ"
+  mz80GetContext(&mz80);
+  memcpy(data+4, &mz80.z80clockticks, sizeof(mz80)-5*4); // don't save base&memhandlers
+#elif defined(_USE_DRZ80)
+  *(int *)data = 0x015A7244; // "DrZ" v1
+//  drZ80.Z80PC = drZ80.z80_rebasePC(drZ80.Z80PC-drZ80.Z80PC_BASE);
+//  drZ80.Z80SP = drZ80.z80_rebaseSP(drZ80.Z80SP-drZ80.Z80SP_BASE);
+  memcpy(data+4, &drZ80, 0x54);
 #elif defined(_USE_CZ80)
-  {
-    const cz80_struc *CPU = &CZ80;
-    s->m.a = zA;  s->m.f = zF;
-    s->m.b = zB;  s->m.c = zC;
-    s->m.d = zD;  s->m.e = zE;
-    s->m.h = zH;  s->m.l = zL;
-    s->a.a = zA2; s->a.f = zF2;
-    s->a.b = CZ80.BC2.B.H; s->a.c = CZ80.BC2.B.L;
-    s->a.d = CZ80.DE2.B.H; s->a.e = CZ80.DE2.B.L;
-    s->a.h = CZ80.HL2.B.H; s->a.l = CZ80.HL2.B.L;
-    s->i  = zI;   s->r  = zR;
-    s->ix = zIX;  s->iy = zIY;
-    s->sp = Cz80_Get_Reg(&CZ80, CZ80_SP);
-    s->pc = Cz80_Get_Reg(&CZ80, CZ80_PC);
-    s->halted = !!Cz80_Get_Reg(&CZ80, CZ80_HALT);
-    s->iff1 = !!zIFF1;
-    s->iff2 = !!zIFF2;
-    s->im = zIM;
-    s->irq_pending = (Cz80_Get_Reg(&CZ80, CZ80_IRQ) == HOLD_LINE);
-    s->irq_vector[0] = 0xff;
-  }
+  *(int *)data = 0x00007a43; // "Cz"
+  *(int *)(data+4) = Cz80_Get_Reg(&CZ80, CZ80_PC);
+  memcpy(data+8, &CZ80, (INT32)&CZ80.BasePC - (INT32)&CZ80);
 #endif
 }
 
-int z80_unpack(const void *data)
+PICO_INTERNAL void z80_unpack(unsigned char *data)
 {
-  const struct z80_state *s = data;
-  if (strcmp(s->magic, "Z80") != 0) {
-    elprintf(EL_STATUS, "legacy z80 state - ignored");
-    return 0;
+#if defined(_USE_MZ80)
+  if (*(int *)data == 0x00005A6D) { // "mZ" save?
+    struct mz80context mz80;
+    mz80GetContext(&mz80);
+    memcpy(&mz80.z80clockticks, data+4, sizeof(mz80)-5*4);
+    mz80SetContext(&mz80);
+  } else {
+    z80_reset();
+    z80_int();
   }
-
-#if defined(_USE_DRZ80)
-  #define DRW8(n, v)       drZ80.Z80##n = (u32)(v) << 24
-  #define DRW16(n, v)      drZ80.Z80##n = (u32)(v) << 16
-  #define DRW16HL(n, h, l) drZ80.Z80##n = ((u32)(h) << 24) | ((u32)(l) << 16)
-  DRW8(A, s->m.a);  drZ80.Z80F = s->m.f;
-  DRW16HL(BC, s->m.b, s->m.c);
-  DRW16HL(DE, s->m.d, s->m.e);
-  DRW16HL(HL, s->m.h, s->m.l);
-  DRW8(A2, s->a.a); drZ80.Z80F2 = s->a.f;
-  DRW16HL(BC2, s->a.b, s->a.c);
-  DRW16HL(DE2, s->a.d, s->a.e);
-  DRW16HL(HL2, s->a.h, s->a.l);
-  DRW8(I, s->i);    drZ80.spare = s->r;
-  DRW16(IX, s->ix); DRW16(IY, s->iy);
-  drz80_load_pcsp(s->pc, s->sp);
-  drZ80.Z80IF = 0;
-  if (s->halted) drZ80.Z80IF |= 4;
-  if (s->iff1)   drZ80.Z80IF |= 1;
-  if (s->iff2)   drZ80.Z80IF |= 2;
-  drZ80.Z80IM = s->im;
-  drZ80.Z80_IRQ = s->irq_pending;
-  drZ80.z80irqvector = ((u32)s->irq_vector[0] << 16) |
-    ((u32)s->irq_vector[1] << 8) | s->irq_vector[2];
-  return 0;
+#elif defined(_USE_DRZ80)
+  if (*(int *)data == 0x015A7244) { // "DrZ" v1 save?
+    int pc, sp;
+    memcpy(&drZ80, data+4, 0x54);
+    pc = (drZ80.Z80PC - drZ80.Z80PC_BASE) & 0xffff;
+    sp = (drZ80.Z80SP - drZ80.Z80SP_BASE) & 0xffff;
+    // update bases
+    drZ80.Z80PC_BASE = z80_read_map[pc >> Z80_MEM_SHIFT];
+    if (drZ80.Z80PC & (1<<31)) {
+      elprintf(EL_STATUS|EL_ANOMALY, "bad PC in z80 save: %04x", pc);
+      drZ80.Z80PC_BASE = drZ80.Z80PC = z80_read_map[0];
+    } else {
+      drZ80.Z80PC_BASE <<= 1;
+      drZ80.Z80PC = drZ80.Z80PC_BASE + pc;
+    }
+    drZ80.Z80SP_BASE = z80_read_map[sp >> Z80_MEM_SHIFT];
+    if (drZ80.Z80SP & (1<<31)) {
+      elprintf(EL_STATUS|EL_ANOMALY, "bad SP in z80 save: %04x", sp);
+      drZ80.Z80SP_BASE = z80_read_map[0];
+      drZ80.Z80SP = drZ80.Z80SP_BASE + (1 << Z80_MEM_SHIFT);
+    } else {
+      drZ80.Z80SP_BASE <<= 1;
+      drZ80.Z80SP = drZ80.Z80SP_BASE + sp;
+    }
+  } else {
+    z80_reset();
+    drZ80.Z80IM = 1;
+    z80_int(); // try to goto int handler, maybe we won't execute trash there?
+  }
 #elif defined(_USE_CZ80)
-  {
-    cz80_struc *CPU = &CZ80;
-    zA  = s->m.a; zF  = s->m.f;
-    zB  = s->m.b; zC  = s->m.c;
-    zD  = s->m.d; zE  = s->m.e;
-    zH  = s->m.h; zL  = s->m.l;
-    zA2 = s->a.a; zF2 = s->a.f;
-    CZ80.BC2.B.H = s->a.b; CZ80.BC2.B.L = s->a.c;
-    CZ80.DE2.B.H = s->a.d; CZ80.DE2.B.L = s->a.e;
-    CZ80.HL2.B.H = s->a.h; CZ80.HL2.B.L = s->a.l;
-    zI  = s->i;   zR  = s->r;
-    zIX = s->ix;  zIY = s->iy;
-    Cz80_Set_Reg(&CZ80, CZ80_SP, s->sp);
-    Cz80_Set_Reg(&CZ80, CZ80_PC, s->pc);
-    Cz80_Set_Reg(&CZ80, CZ80_HALT, s->halted);
-    Cz80_Set_Reg(&CZ80, CZ80_IFF1, s->iff1);
-    Cz80_Set_Reg(&CZ80, CZ80_IFF2, s->iff2);
-    zIM = s->im;
-    Cz80_Set_Reg(&CZ80, CZ80_IRQ, s->irq_pending ? HOLD_LINE : CLEAR_LINE);
-    return 0;
+  if (*(int *)data == 0x00007a43) { // "Cz" save?
+    memcpy(&CZ80, data+8, (INT32)&CZ80.BasePC - (INT32)&CZ80);
+    Cz80_Set_Reg(&CZ80, CZ80_PC, *(int *)(data+4));
+  } else {
+    z80_reset();
+    z80_int();
   }
-#else
-  return 0;
 #endif
 }
 
-void z80_exit(void)
+PICO_INTERNAL void z80_exit(void)
 {
+#if defined(_USE_MZ80)
+  mz80shutdown();
+#endif
 }
 
-void z80_debug(char *dstr)
+PICO_INTERNAL void z80_debug(char *dstr)
 {
 #if defined(_USE_DRZ80)
   sprintf(dstr, "Z80 state: PC: %04x SP: %04x\n", drZ80.Z80PC-drZ80.Z80PC_BASE, drZ80.Z80SP-drZ80.Z80SP_BASE);
 #elif defined(_USE_CZ80)
-  sprintf(dstr, "Z80 state: PC: %04x SP: %04x\n", (unsigned int)(CZ80.PC - CZ80.BasePC), CZ80.SP.W);
+  sprintf(dstr, "Z80 state: PC: %04x SP: %04x\n", CZ80.PC - CZ80.BasePC, CZ80.SP.W);
 #endif
 }
-
-// vim:ts=2:sw=2:expandtab

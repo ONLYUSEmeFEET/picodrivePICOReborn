@@ -1,10 +1,3 @@
-/*
- * PicoDrive
- * (C) notaz, 2009,2010
- *
- * This work is licensed under the terms of MAME license.
- * See COPYING file in the top-level directory.
- */
 #include <windows.h>
 #include <stdio.h>
 
@@ -18,8 +11,10 @@
 #include "main.h"
 
 static unsigned short screen_buff[320 * 240];
-const char *renderer_names[] = { NULL };
-const char *renderer_names32x[] = { NULL };
+static unsigned char PicoDraw2FB_[(8+320) * (8+240+8)];
+unsigned char *PicoDraw2FB = PicoDraw2FB_;
+
+char cpu_clk_name[] = "unused";
 
 void plat_init(void)
 {
@@ -64,18 +59,29 @@ int plat_wait_event(int *fds_hnds, int count, int timeout_ms)
 void pemu_prep_defconfig(void)
 {
 	memset(&defaultConfig, 0, sizeof(defaultConfig));
+	defaultConfig.EmuOpt    = 0x9d | EOPT_RAM_TIMINGS|EOPT_CONFIRM_SAVE|EOPT_EN_CD_LEDS;
+	defaultConfig.s_PicoOpt = POPT_EN_STEREO|POPT_EN_FM|POPT_EN_PSG|POPT_EN_Z80 |
+				  POPT_EN_MCD_PCM|POPT_EN_MCD_CDDA|POPT_ACC_SPRITES |
+				  POPT_EN_32X|POPT_EN_PWM;
+	defaultConfig.s_PicoOpt|= POPT_6BTN_PAD; // for xmen proto
+	defaultConfig.s_PsndRate = 44100;
+	defaultConfig.s_PicoRegion = 0; // auto
+	defaultConfig.s_PicoAutoRgnOrder = 0x184; // US, EU, JP
 	defaultConfig.s_PicoCDBuffers = 0;
 	defaultConfig.Frameskip = 0;
 }
 
-void pemu_validate_config(void)
+static int EmuScanBegin16(unsigned int num)
 {
+	DrawLineDest = (unsigned short *) g_screen_ptr + g_screen_width * num;
+
+	return 0;
 }
 
 void pemu_loop_prep(void)
 {
-	PicoDrawSetOutFormat(PDF_RGB555, 1);
-	PicoDrawSetOutBuf(g_screen_ptr, g_screen_ppitch * 2);
+	PicoDrawSetColorFormat(1);
+	PicoScanBegin = EmuScanBegin16;
 	pemu_sound_start();
 }
 
@@ -84,15 +90,11 @@ void pemu_loop_end(void)
 	pemu_sound_stop();
 }
 
-void pemu_forced_frame(int no_scale, int do_emu)
+void pemu_forced_frame(int opts)
 {
 }
 
-void pemu_finalize_frame(const char *fps, const char *notice_msg)
-{
-}
-
-void plat_video_flip(void)
+void pemu_update_display(const char *fps, const char *notice_msg)
 {
 	DirectScreen(g_screen_ptr);
 	DirectPresent();
@@ -102,10 +104,10 @@ void plat_video_wait_vsync(void)
 {
 }
 
-void plat_video_toggle_renderer(int change, int is_menu)
+void plat_video_toggle_renderer(int is_next, int force_16bpp, int is_menu)
 {
 	// this will auto-select SMS/32X renderers
-	PicoDrawSetOutFormat(PDF_RGB555, 1);
+	PicoDrawSetColorFormat(1);
 }
 
 void emu_video_mode_change(int start_line, int line_count, int is_32cols)
@@ -123,7 +125,7 @@ static int sndbuff[2*44100/50/2 + 4];
 static void update_sound(int len)
 {
 	/* avoid writing audio when lagging behind to prevent audio lag */
-	if (PicoIn.skipFrame != 2)
+	if (PicoSkipFrame != 2)
 		DSoundUpdate(sndbuff, (currentConfig.EmuOpt & EOPT_NO_FRMLIMIT) ? 0 : 1);
 }
 
@@ -131,7 +133,7 @@ void pemu_sound_start(void)
 {
 	int ret;
 
-	PicoIn.sndOut = NULL;
+	PsndOut = NULL;
 	currentConfig.EmuOpt &= ~EOPT_EXT_FRMLIMIT;
 
 	// prepare sound stuff
@@ -139,14 +141,14 @@ void pemu_sound_start(void)
 	{
 		PsndRerate(0);
 
-		ret = DSoundInit(FrameWnd, PicoIn.sndRate, (PicoIn.opt & POPT_EN_STEREO) ? 1 : 0, Pico.snd.len);
+		ret = DSoundInit(FrameWnd, PsndRate, (PicoOpt & POPT_EN_STEREO) ? 1 : 0, PsndLen);
 		if (ret != 0) {
 			lprintf("dsound init failed\n");
 			return;
 		}
 
-		PicoIn.sndOut = (void *)sndbuff;
-		PicoIn.writeSound = update_sound;
+		PsndOut = (void *)sndbuff;
+		PicoWriteSound = update_sound;
 		currentConfig.EmuOpt |= EOPT_EXT_FRMLIMIT;
 	}
 }
@@ -198,6 +200,10 @@ void plat_video_menu_end(void)
 {
 }
 
+void plat_validate_config(void)
+{
+}
+
 void plat_update_volume(int has_changed, int is_up)
 {
 }
@@ -221,12 +227,12 @@ void plat_debug_cat(char *str)
 }
 
 // required by pico
-int mp3_get_bitrate(void *f, int size)
+int mp3_get_bitrate(FILE *f, int size)
 {
 	return 128;
 }
 
-void mp3_start_play(void *f, int pos)
+void mp3_start_play(FILE *f, int pos)
 {
 }
 

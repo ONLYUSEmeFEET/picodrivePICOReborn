@@ -1,10 +1,8 @@
-/*
- * PicoDrive
- * (C) notaz, 2007,2008
- *
- * This work is licensed under the terms of MAME license.
- * See COPYING file in the top-level directory.
- */
+// (c) Copyright 2007 notaz, All rights reserved.
+// Free for non-commercial use.
+
+// For commercial use, separate licencing terms must be obtained.
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>

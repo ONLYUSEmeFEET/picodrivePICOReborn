@@ -1,38 +1,19 @@
-/*
- * The SVP chip emulator
- *
- * Copyright (c) Gražvydas "notaz" Ignotas, 2008
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in the
- *       documentation and/or other materials provided with the distribution.
- *     * Neither the name of the organization nor the
- *       names of its contributors may be used to endorse or promote products
- *       derived from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
+// The SVP chip emulator
 
-#include <pico/pico_int.h>
-#include <cpu/drc/cmn.h>
+// (c) Copyright 2008, Grazvydas "notaz" Ignotas
+// Free for non-commercial use.
+
+// For commercial use, separate licencing terms must be obtained.
+
+
+#include "../../pico_int.h"
 #include "compiler.h"
-
-#define SVP_CYCLES_LINE 850
+#if defined(__linux__) && defined(ARM)
+#include <sys/mman.h>
+#endif
 
 svp_t *svp = NULL;
+int PicoSVPCycles = 850; // cycles/line, just a guess
 static int svp_dyn_ready = 0;
 
 /* save state stuff */
@@ -57,8 +38,8 @@ static void PicoSVPReset(void)
 
 	memcpy(svp->iram_rom + 0x800, Pico.rom + 0x800, 0x20000 - 0x800);
 	ssp1601_reset(&svp->ssp1601);
-#ifdef _SVP_DRC
-	if ((PicoIn.opt & POPT_EN_DRC) && svp_dyn_ready)
+#ifndef PSP
+	if ((PicoOpt&POPT_EN_SVP_DRC) && svp_dyn_ready)
 		ssp1601_dyn_reset(&svp->ssp1601);
 #endif
 }
@@ -67,7 +48,7 @@ static void PicoSVPReset(void)
 static void PicoSVPLine(void)
 {
 	int count = 1;
-#if defined(__arm__) || defined(PSP)
+#if defined(ARM) || defined(PSP)
 	// performance hack
 	static int delay_lines = 0;
 	delay_lines++;
@@ -77,35 +58,38 @@ static void PicoSVPLine(void)
 	delay_lines = 0;
 #endif
 
-#ifdef _SVP_DRC
-	if ((PicoIn.opt & POPT_EN_DRC) && svp_dyn_ready)
-		ssp1601_dyn_run(SVP_CYCLES_LINE * count);
+#ifndef PSP
+	if ((PicoOpt&POPT_EN_SVP_DRC) && svp_dyn_ready)
+		ssp1601_dyn_run(PicoSVPCycles * count);
 	else
 #endif
 	{
-		ssp1601_run(SVP_CYCLES_LINE * count);
+		ssp1601_run(PicoSVPCycles * count);
 		svp_dyn_ready = 0; // just in case
 	}
 
 	// test mode
-	//if (Pico.m.frame_count == 13) PicoIn.pad[0] |= 0xff;
+	//if (Pico.m.frame_count == 13) PicoPad[0] |= 0xff;
 }
 
 
-static int PicoSVPDma(unsigned int source, int len, unsigned short **base, unsigned int *mask)
+static int PicoSVPDma(unsigned int source, int len, unsigned short **srcp, unsigned short **limitp)
 {
 	if (source < Pico.romsize) // Rom
 	{
-		*base = (unsigned short *)(Pico.rom + (source & 0xfe0000));
-		*mask = 0x1ffff;
-		return source - 2;
+		source -= 2;
+		*srcp = (unsigned short *)(Pico.rom + (source&~1));
+		*limitp = (unsigned short *)(Pico.rom + Pico.romsize);
+		return 1;
 	}
 	else if ((source & 0xfe0000) == 0x300000)
 	{
 		elprintf(EL_VDPDMA|EL_SVP, "SVP DmaSlow from %06x, len=%i", source, len);
-		*base = (unsigned short *)svp->dram;
-		*mask = 0x1ffff;
-		return source - 2;
+		source &= 0x1fffe;
+		source -= 2;
+		*srcp = (unsigned short *)(svp->dram + source);
+		*limitp = (unsigned short *)(svp->dram + sizeof(svp->dram));
+		return 1;
 	}
 	else
 		elprintf(EL_VDPDMA|EL_SVP|EL_ANOMALY, "SVP FIXME unhandled DmaSlow from %06x, len=%i", source, len);
@@ -116,42 +100,51 @@ static int PicoSVPDma(unsigned int source, int len, unsigned short **base, unsig
 
 void PicoSVPInit(void)
 {
-#ifdef _SVP_DRC
-	// this is to unmap tcache and make
-	// mem available for large ROMs, MCD, etc.
-	drc_cmn_cleanup();
+#if defined(__linux__) && defined(ARM)
+	int ret;
+	ret = munmap(tcache, SSP_DRC_SIZE);
+	printf("munmap tcache: %i\n", ret);
 #endif
 }
 
-static void PicoSVPExit(void)
+
+static void PicoSVPShutdown(void)
 {
-#ifdef _SVP_DRC
-	ssp1601_dyn_exit();
+#if defined(__linux__) && defined(ARM)
+	// also unmap tcache
+	PicoSVPInit();
 #endif
 }
 
 
 void PicoSVPStartup(void)
 {
-	int ret;
+	void *tmp;
 
 	elprintf(EL_STATUS, "SVP startup");
 
-	ret = PicoCartResize(Pico.romsize + sizeof(*svp));
-	if (ret != 0) {
+	tmp = realloc(Pico.rom, 0x200000 + sizeof(*svp));
+	if (tmp == NULL)
+	{
 		elprintf(EL_STATUS|EL_SVP, "OOM for SVP data");
 		return;
 	}
 
-	svp = (void *) ((char *)Pico.rom + Pico.romsize);
+	//PicoOpt &= ~0x20000;
+	Pico.rom = tmp;
+	svp = (void *) ((char *)tmp + 0x200000);
 	memset(svp, 0, sizeof(*svp));
+
+#if defined(__linux__) && defined(ARM)
+	tmp = mmap(tcache, SSP_DRC_SIZE, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_SHARED|MAP_ANONYMOUS, -1, 0);
+	printf("mmap tcache: %p, asked %p\n", tmp, tcache);
+#endif
 
 	// init SVP compiler
 	svp_dyn_ready = 0;
-#ifdef _SVP_DRC
-	if (PicoIn.opt & POPT_EN_DRC) {
-		if (ssp1601_dyn_startup())
-			return;
+#ifndef PSP
+	if (PicoOpt&POPT_EN_SVP_DRC) {
+		if (ssp1601_dyn_startup()) return;
 		svp_dyn_ready = 1;
 	}
 #endif
@@ -161,13 +154,14 @@ void PicoSVPStartup(void)
 	PicoDmaHook = PicoSVPDma;
 	PicoResetHook = PicoSVPReset;
 	PicoLineHook = PicoSVPLine;
-	PicoCartUnloadHook = PicoSVPExit;
+	PicoCartUnloadHook = PicoSVPShutdown;
 
 	// save state stuff
 	svp_states[0].ptr = svp->iram_rom;
 	svp_states[1].ptr = svp->dram;
 	svp_states[2].ptr = &svp->ssp1601;
 	carthw_chunks = svp_states;
-	PicoIn.AHW |= PAHW_SVP;
+	PicoAHW |= PAHW_SVP;
 }
+
 

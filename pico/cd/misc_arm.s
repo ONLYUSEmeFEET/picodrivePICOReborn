@@ -1,10 +1,7 @@
-@*
-@* Memory converters for different modes
-@* (C) notaz, 2007-2008
-@*
-@* This work is licensed under the terms of MAME license.
-@* See COPYING file in the top-level directory.
-@*
+@ vim:filetype=armasm
+
+@ Memory converters for different modes
+@ (c) Copyright 2007, Grazvydas "notaz" Ignotas
 
 
 @ r10 is tmp, io1 is lsb halfword, io2 is msb
@@ -76,4 +73,4 @@ _1Mto2M_loop:
 
     ldmfd   sp!,{r4-r11,pc}
 
-@ vim:filetype=armasm
+

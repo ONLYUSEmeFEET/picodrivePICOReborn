@@ -14,7 +14,8 @@
 #include "cz80.h"
 
 #if PICODRIVE_HACKS
-#include <pico/memory.h>
+#undef EMU_M68K
+#include <pico/pico_int.h>
 #endif
 
 #ifndef ALIGN_DATA
@@ -106,7 +107,7 @@ void Cz80_Init(cz80_struc *CPU)
 
 	for (i = 0; i < CZ80_FETCH_BANK; i++)
 	{
-		CPU->Fetch[i] = (FPTR)cz80_bad_address;
+		CPU->Fetch[i] = (UINT32)cz80_bad_address;
 #if CZ80_ENCRYPTED_ROM
 		CPU->OPFetch[i] = 0;
 #endif
@@ -210,7 +211,7 @@ void Cz80_Init(cz80_struc *CPU)
 
 void Cz80_Reset(cz80_struc *CPU)
 {
-	memset(CPU, 0, (FPTR)&CPU->BasePC - (FPTR)CPU);
+	memset(CPU, 0, (INT32)&CPU->BasePC - (INT32)CPU);
 	Cz80_Set_Reg(CPU, CZ80_PC, 0);
 }
 
@@ -218,8 +219,8 @@ void Cz80_Reset(cz80_struc *CPU)
 #if PICODRIVE_HACKS
 static inline unsigned char picodrive_read(unsigned short a)
 {
-	uptr v = z80_read_map[a >> Z80_MEM_SHIFT];
-	if (map_flag_set(v))
+	unsigned long v = z80_read_map[a >> Z80_MEM_SHIFT];
+	if (v & 0x80000000)
 		return ((z80_read_f *)(v << 1))(a);
 	return *(unsigned char *)((v << 1) + a);
 }
@@ -235,9 +236,9 @@ INT32 Cz80_Exec(cz80_struc *CPU, INT32 cycles)
 #include "cz80jmp.c"
 #endif
 
-	FPTR PC;
+	UINT32 PC;
 #if CZ80_ENCRYPTED_ROM
-	FPTR OPBase;
+	INT32 OPBase;
 #endif
 	UINT32 Opcode;
 	UINT32 adr = 0;
@@ -316,9 +317,9 @@ void Cz80_Set_IRQ(cz80_struc *CPU, INT32 line, INT32 state)
 
 		if (state != CLEAR_LINE)
 		{
-			FPTR PC = CPU->PC;
+			UINT32 PC = CPU->PC;
 #if CZ80_ENCRYPTED_ROM
-			FPTR OPBase = CPU->OPBase;
+			INT32 OPBase = CPU->OPBase;
 #endif
 
 			CPU->IRQLine = line;
@@ -394,8 +395,8 @@ void Cz80_Set_Reg(cz80_struc *CPU, INT32 regnum, UINT32 val)
 	case CZ80_R:    zR = val; break;
 	case CZ80_I:    zI = val; break;
 	case CZ80_IM:   zIM = val; break;
-	case CZ80_IFF1: zIFF1 = val ? (1 << 2) : 0; break;
-	case CZ80_IFF2: zIFF2 = val ? (1 << 2) : 0; break;
+	case CZ80_IFF1: zIFF1 = val; break;
+	case CZ80_IFF2: zIFF2 = val; break;
 	case CZ80_HALT: CPU->HaltState = val; break;
 	case CZ80_IRQ:  CPU->IRQState = val; break;
 	default: break;
@@ -407,7 +408,7 @@ void Cz80_Set_Reg(cz80_struc *CPU, INT32 regnum, UINT32 val)
 	フェッチアドレス設定
 --------------------------------------------------------*/
 
-void Cz80_Set_Fetch(cz80_struc *CPU, UINT32 low_adr, UINT32 high_adr, FPTR fetch_adr)
+void Cz80_Set_Fetch(cz80_struc *CPU, UINT32 low_adr, UINT32 high_adr, UINT32 fetch_adr)
 {
 	int i, j;
 
